@@ -10,7 +10,7 @@ An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU/KVM vir
 
 `virtioscsi.device` exposes QEMU VirtIO SCSI virtual disks to AmigaOS 4.1 FE as standard trackdisk-compatible block devices. Once installed, AmigaOS treats them like any other hard disk: partitions are automatically discovered and mounted at boot, and filesystems (FFS2, SFS, etc.) work normally.
 
-This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the Pegasos2 machine type. VirtIO SCSI disks are faster and more flexible than emulated IDE, and this driver gives AmigaOS full access to them.
+This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the AmigaOne machine type. VirtIO SCSI disks are faster and more flexible than emulated IDE, and this driver gives AmigaOS full access to them.
 
 ---
 
@@ -38,8 +38,7 @@ This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the Pega
 
 ```sh
 qemu-system-ppc \
-  -M pegasos2 \
-  -bios pegasos2.rom \
+  -M amigaone \
   -device virtio-scsi-pci,id=scsi0 \
   -drive file=amigaos.img,if=none,id=hd0 \
   -device scsi-hd,drive=hd0,bus=scsi0.0

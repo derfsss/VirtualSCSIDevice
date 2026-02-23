@@ -20,7 +20,7 @@ virtioscsi.device is a device driver for AmigaOS 4.1 Final Edition that
 gives the operating system access to VirtIO SCSI virtual disks in QEMU/KVM
 virtual machines.
 
-When running AmigaOS 4.1 FE inside QEMU using the Pegasos2 machine type,
+When running AmigaOS 4.1 FE inside QEMU using the AmigaOne machine type,
 VirtIO SCSI is a fast and flexible alternative to emulated IDE. This driver
 makes those virtual disks available to AmigaOS as standard trackdisk-
 compatible block devices. Partitions are discovered and mounted at boot
@@ -34,7 +34,7 @@ REQUIREMENTS
 
 Example QEMU command line:
 
-  qemu-system-ppc -M pegasos2 -bios pegasos2.rom \
+  qemu-system-ppc -M amigaone \
     -device virtio-scsi-pci,id=scsi0 \
     -drive file=amigaos.img,if=none,id=hd0 \
     -device scsi-hd,drive=hd0,bus=scsi0.0

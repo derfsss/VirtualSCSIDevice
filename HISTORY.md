@@ -20,7 +20,7 @@ This file contains a persistent timeline of the development steps and decisions 
 - Created `src/pci/` isolated architecture to keep AmigaOS PCI enumeration completely separated from VirtIO protocol logic.
 - Hooked `expansion.library` opens and closes into standard `Init` and `Expunge` vectors.
 - Implemented `pci_discovery.c` to gracefully probe the AmigaOS 4 PCI bus for Vendor ID `0x1AF4` and Device ID `0x1004`.
-- Extracted and safely mapped the QEMU Pegasos2 base registers for VirtIO SCSI (BAR 0 mapped to Legacy I/O `0x00800500`, BAR 4 mapped to MMIO `0x84204000`).
+- Extracted and safely mapped the QEMU AmigaOne base registers for VirtIO SCSI (BAR 0 mapped to Legacy I/O `0x00800500`, BAR 4 mapped to MMIO `0x84204000`).
 - Diagnosed and fixed core DSI crashes related to OS4 varargs calling conventions (`TAG_DONE` requirement) and `GetInterface` naming mismatches.
 
 ## Phase 3: VirtIO Component Initialization
@@ -84,7 +84,7 @@ This file contains a persistent timeline of the development steps and decisions 
     - Fixed `TD_GETNUMTRACKS` to return a non-zero fallback (32768) if geometry isn't cached, preventing "empty drive" errors.
     - Enhanced `BeginIO` tracing with Task Names (`FindTask(NULL)`) and physical offsets for precise diagnostic correlation.
 - **Fixed Multi-Unit Routing Bugs**: Corrected a long-standing issue where background commands (`TD_ADDCHANGEINT`, `TD_REMOVE`) were hardcoded to unit 0. They now correctly use `ioreq->io_Unit`.
-- **Verified Successful Boot**: Achieved stable system startup with multiple VirtIO SCSI disks on QEMU Pegasos2. All partitions mount automatically without freezing.
+- **Verified Successful Boot**: Achieved stable system startup with multiple VirtIO SCSI disks on QEMU AmigaOne. All partitions mount automatically without freezing.
 
 ## Phase 12: v1.2 Release & Stress Testing
 - **Driver Version 1.2 (Build 1029)**: Officially bumped version and revision.
