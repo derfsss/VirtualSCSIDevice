@@ -1,5 +1,5 @@
 CC = ppc-amigaos-gcc
-CFLAGS = -O2 -Wall -I./include -fno-tree-loop-distribute-patterns
+CFLAGS = -O2 -Wall -I./include -fno-tree-loop-distribute-patterns -DDEBUG
 LDFLAGS = -nostartfiles
 
 BUILD_DIR = build
