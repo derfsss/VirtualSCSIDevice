@@ -104,13 +104,23 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      * (new_idx - old_idx) wraps to a large uint16, making the first
      * comparison always TRUE until the device writes a real avail_event.
      */
-    /* Accept EVENT_IDX (bit 29) and INDIRECT_DESC (bit 28) if offered */
-    uint32 guest_features = host_features & ((1UL << 29) | (1UL << 28));
+    /*
+     * Accept VIRTIO_F_EVENT_IDX (bit 29) only.
+     *
+     * VIRTIO_F_INDIRECT_DESC (bit 28) is NOT negotiated: QEMU's legacy
+     * VirtIO SCSI implementation reads indirect descriptor table entries as
+     * little-endian, but we are a big-endian (PPC) guest filling them in
+     * native byte order. This causes QEMU to see garbage lengths and report
+     * "wrong size for virtio-scsi headers". The direct chained-descriptor
+     * path works correctly and supports up to MAX_SG_ENTRIES=64 entries,
+     * which is sufficient for all practical transfer sizes.
+     */
+    uint32 guest_features = host_features & (1UL << 29); /* EVENT_IDX only */
     BOOL use_event_idx  = (guest_features & (1UL << 29)) != 0;
-    BOOL use_indirect   = (guest_features & (1UL << 28)) != 0;
-    DPRINTF(IExec, "[virtioscsi] InitVirtIO: Guest features: 0x%08lX%s%s\n", guest_features,
-            use_event_idx ? " EVENT_IDX" : "",
-            use_indirect  ? " INDIRECT_DESC" : "");
+    BOOL use_indirect   = FALSE; /* disabled — endianness incompatibility */
+    DPRINTF(IExec, "[virtioscsi] InitVirtIO: Guest features: 0x%08lX%s\n", guest_features,
+            use_event_idx ? " EVENT_IDX" : "");
+    (void)use_indirect; /* suppress unused-variable warning */
     pciDev->OutLong(iobase + VIRTIO_PCI_GUEST_FEATURES, guest_features);
 
     /* Step 7: VirtQueue Setup */
