@@ -5,6 +5,15 @@ Author: derfsss
 Source: https://github.com/derfsss/VirtualSCSIDevice
 
 
+DEVELOPED WITH AI
+-----------------
+This driver was developed with Claude AI (Anthropic) acting as the primary
+engineer - writing all C code, designing the architecture, debugging
+hardware-level issues, and navigating the AmigaOS 4.1 SDK. It is a
+practical demonstration of AI-assisted low-level systems programming on a
+niche, legacy platform with minimal AI training data available.
+
+
 INTRODUCTION
 ------------
 virtioscsi.device is a device driver for AmigaOS 4.1 Final Edition that
