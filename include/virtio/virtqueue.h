@@ -12,9 +12,9 @@
 #define VRING_AVAIL_F_NO_INTERRUPT 1
 
 /* Maximum scatter-gather entries per VirtIO request.
- * 64KB at 4KB pages = 16 data entries + req_cmd + resp_cmd = 18 max.
- * 32 provides safe headroom. */
-#define MAX_SG_ENTRIES 32
+ * 240KB at 4KB pages = 60 data entries + req_cmd + resp_cmd = 62 max.
+ * 64 provides safe headroom, allowing ~240KB transfers without chaining. */
+#define MAX_SG_ENTRIES 64
 
 /* vring_desc - 16 bytes */
 struct vring_desc

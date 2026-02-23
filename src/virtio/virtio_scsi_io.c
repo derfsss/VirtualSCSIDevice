@@ -57,29 +57,6 @@ static BOOL prepare_dma(struct ExecIFace *IExec, struct DMABuffer *db, APTR addr
 }
 
 /*
- * Zero a MEMF_SHARED (non-cacheable) buffer using a volatile byte loop.
- *
- * ClearMem/SetMem must NOT be used on non-cacheable memory — they use cache
- * manipulation instructions and fall back to a slow exception handler path
- * when the memory is cache-inhibited. A volatile loop bypasses the cache
- * entirely and is safe for DMA-mapped (MEMF_SHARED) regions.
- */
-/*
- * GCC replaces simple fill loops with memset() even through 'volatile',
- * and memset lives in newlib which is not linked (-nostartfiles, no INewlib).
- * Using uint32 stores with noinline prevents that substitution while still
- * emitting one store per word. size must be a multiple of 4.
- */
-static void __attribute__((noinline)) zero_shared(void *buf, uint32 size)
-{
-    volatile uint32 *p = (volatile uint32 *)buf;
-    uint32 words = size / 4;
-    uint32 i;
-    for (i = 0; i < words; i++)
-        p[i] = 0;
-}
-
-/*
  * VirtIOSCSI_DoIO: Execute a SCSI command through VirtIO Queue 2 (requestq).
  *
  * When unit != NULL and interrupts are installed, the calling task sleeps
@@ -159,15 +136,22 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                 target, lun, cdb[0], (uint32)data_len, (long)tries + 1);
 
         /*
-         * Zero resp_cmd before each attempt so stale data from a previous
-         * try doesn't confuse the response check.
+         * Reset the three response fields we test before each attempt so
+         * stale values from a previous retry don't confuse the checks.
          *
-         * For temp_alloc (discovery), resp was zeroed at alloc time for the
-         * first try; on retry it needs re-zeroing too.
+         * We do NOT zero the full 108-byte buffer (27 volatile stores to
+         * non-cacheable MEMF_SHARED memory on every request). The device
+         * overwrites sense[] before we read it (only read on CHECK CONDITION),
+         * and status_qualifier is not used. The first attempt is already clean
+         * because the buffer was zeroed at allocation time (AVT_ClearWithValue).
          *
-         * Use volatile loop — ClearMem is unsafe on non-cacheable MEMF_SHARED.
+         * Volatile stores required — MEMF_SHARED is non-cacheable.
          */
-        zero_shared(resp_cmd, sizeof(struct virtio_scsi_resp_cmd));
+        volatile struct virtio_scsi_resp_cmd *vresp =
+            (volatile struct virtio_scsi_resp_cmd *)resp_cmd;
+        vresp->response         = 0;
+        vresp->status           = 0;
+        vresp->residual         = 0;
 
         /* Fill the request header — overwrite all fields, no prior zero needed */
         virtio_scsi_set_lun(req_cmd->lun, (uint8)target, (uint16)lun);
@@ -307,9 +291,13 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                 IExec->SetSignal(0, sig_mask);
                 IExec->FreeSignal(sig_bit);
             } else {
-                /* AllocSignal failed — polling fallback */
+                /* AllocSignal failed — busy-poll fallback.
+                 * These paths are rare; normal I/O uses the interrupt path.
+                 * 500,000 iterations gives ~100ms on a slow PPC without
+                 * requiring dos.library Delay() (unavailable in a device
+                 * driver context). */
                 DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: AllocSignal failed, polling\n");
-                uint32 poll_timeout = 5000000;
+                uint32 poll_timeout = 500000;
                 while (poll_timeout-- > 0) {
                     cookie = VirtQueue_GetBuf(vq, &written);
                     if (cookie)
@@ -317,8 +305,10 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                 }
             }
         } else {
-            /* No interrupt handler installed — polling mode */
-            uint32 poll_timeout = 5000000;
+            /* No interrupt handler installed — busy-poll fallback.
+             * 500,000 iterations gives ~100ms; enough for device response
+             * without burning CPU for a full second. */
+            uint32 poll_timeout = 500000;
             while (poll_timeout-- > 0) {
                 cookie = VirtQueue_GetBuf(vq, &written);
                 if (cookie)

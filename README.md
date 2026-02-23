@@ -140,6 +140,11 @@ tests/
 
 ## Changelog
 
+### v1.3 build 1043 — 2026-02-23
+- Performance: response buffer reset reduced from 108-byte volatile loop to 3 targeted volatile stores (only `response`, `status`, `residual` need resetting between retries; remaining fields are written by device or never read in practice).
+- Performance: `MAX_SG_ENTRIES` increased from 32 to 64, raising the maximum DMA scatter-gather transfer from ~96KB to ~240KB at 4KB page granularity.
+- Performance: polling fallback reduced from 5,000,000 to 500,000 iterations — the interrupt path handles all normal I/O; the polling path is only a safety net during discovery or if `AllocSignal` fails.
+
 ### v1.3 build 1042 — 2026-02-23
 - Fixed VIRTIO_F_EVENT_IDX kick-suppression bug: avail_event is zero at init time, causing all I/O after the first request to be silently dropped. EVENT_IDX disabled until the basic I/O path is proven stable.
 - Release build (DEBUG disabled by default).
