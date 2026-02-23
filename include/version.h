@@ -1,0 +1,29 @@
+#ifndef VERSION_H
+#define VERSION_H
+
+/* Individual version components */
+#define DEVICE_VERSION 1
+#define DEVICE_REVISION 3
+#define DEVICE_BUILD 1042
+#define DEVICE_DATE "23.02.2026"
+#define DEVNAME "virtioscsi.device"
+
+/* Helper macros for stringification */
+#define STR(x) #x
+#define XSTR(x) STR(x)
+
+/* Map to standard AmigaOS legacy defines */
+#define DEVVER DEVICE_VERSION
+#define DEVREV DEVICE_REVISION
+
+/*
+ * Standard AmigaOS version string: $VER: name version.revision (date)
+ * Combined using string literal concatenation.
+ */
+#define DEVVERSIONSTRING DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) " (" DEVICE_DATE ")"
+
+/* Full logging version string including build number */
+#define VERSION_LOG_STRING                                                                                             \
+    DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) "." XSTR(DEVICE_BUILD) " (" DEVICE_DATE ")"
+
+#endif /* VERSION_H */

@@ -1,0 +1,5 @@
+build/
+dist/
+*.o
+*.device
+debug_log.txt
