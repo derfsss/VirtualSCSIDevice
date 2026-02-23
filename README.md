@@ -140,6 +140,21 @@ tests/
 
 ## Changelog
 
+### v1.3 build 1047 — 2026-02-23
+- Performance: pipelined block I/O — up to 8 simultaneous VirtIO SCSI requests per unit (`MAX_INFLIGHT=8`). Block I/O commands (CMD_READ, CMD_WRITE, TD_READ64, TD_WRITE64, NSCMD variants) are submitted asynchronously via `VirtIOSCSI_Submit()` and replied by `VirtIOSCSI_Harvest()` on ISR signal. HD_SCSICMD and geometry commands remain synchronous.
+- Performance: per-unit ISR signal is now persistent (allocated once at unit task startup, not per-request). The interrupt handler signals the unit task on any VirtIO completion without per-call setup overhead.
+- Pre-allocated DMA buffers extended from 1 to 8 per-unit slots (one per inflight request). Slot 0 is aliased for the synchronous DoIO path for backwards compatibility.
+- Fallback to synchronous DoIO when all inflight slots are full (ensures forward progress under high concurrency without queueing complexity).
+
+### v1.3 build 1046 — 2026-02-23
+- Performance: READ(16)/WRITE(16) support for disks >2TB. The 64-bit I/O paths (TD_READ64, TD_WRITE64, NSCMD variants) now use READ(16)/WRITE(16) CDBs when the computed LBA exceeds 0xFFFFFFFF, allowing correct access to images larger than ~2.1TB at 512B sectors.
+
+### v1.3 build 1045 — 2026-02-23
+- Performance: VIRTIO_F_INDIRECT_DESC (bit 28) negotiated and implemented. A single vring descriptor now points to a MEMF_SHARED indirect table containing the full scatter-gather chain, eliminating the MAX_SG_ENTRIES=64 limit on transfer size.
+
+### v1.3 build 1044 — 2026-02-23
+- Performance: VIRTIO_F_EVENT_IDX (bit 29) re-enabled and fixed. Root cause of the previous kick-suppression bug was `last_kick_avail_idx` initialised to 0, causing the second kick's suppression check to always fire. Fixed by initialising to 0xFFFF so the first comparison always passes until the device writes a real avail_event value.
+
 ### v1.3 build 1043 — 2026-02-23
 - Performance: response buffer reset reduced from 108-byte volatile loop to 3 targeted volatile stores (only `response`, `status`, `residual` need resetting between retries; remaining fields are written by device or never read in practice).
 - Performance: `MAX_SG_ENTRIES` increased from 32 to 64, raising the maximum DMA scatter-gather transfer from ~96KB to ~240KB at 4KB page granularity.

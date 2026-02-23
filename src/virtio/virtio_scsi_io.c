@@ -239,7 +239,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
 
         /* Submit to the available ring — hold lock only for AddBuf+Kick */
         IExec->ObtainSemaphore(&libBase->io_lock);
-        int32 rc = VirtQueue_AddBuf(vq, sg, out_num, in_num, (void *)req_cmd);
+        int32 rc = VirtQueue_AddBuf(IExec, vq, sg, out_num, in_num, (void *)req_cmd);
         if (rc != 0) {
             IExec->ReleaseSemaphore(&libBase->io_lock);
             DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: AddBuf failed\n");
@@ -273,13 +273,13 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                 __asm__ volatile("sync" ::: "memory");
 
                 /* Fast path: already completed before we registered */
-                cookie = VirtQueue_GetBuf(vq, &written);
+                cookie = VirtQueue_GetBuf(IExec, vq, &written);
 
                 if (!cookie) {
                     uint32 retries = 50;
                     while (retries-- > 0) {
                         IExec->Wait(sig_mask);
-                        cookie = VirtQueue_GetBuf(vq, &written);
+                        cookie = VirtQueue_GetBuf(IExec, vq, &written);
                         if (cookie)
                             break;
                     }
@@ -299,7 +299,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                 DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: AllocSignal failed, polling\n");
                 uint32 poll_timeout = 500000;
                 while (poll_timeout-- > 0) {
-                    cookie = VirtQueue_GetBuf(vq, &written);
+                    cookie = VirtQueue_GetBuf(IExec, vq, &written);
                     if (cookie)
                         break;
                 }
@@ -310,7 +310,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
              * without burning CPU for a full second. */
             uint32 poll_timeout = 500000;
             while (poll_timeout-- > 0) {
-                cookie = VirtQueue_GetBuf(vq, &written);
+                cookie = VirtQueue_GetBuf(IExec, vq, &written);
                 if (cookie)
                     break;
             }
@@ -365,4 +365,241 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
             target, lun, (long)result);
 
     return result;
+}
+
+/*
+ * VirtIOSCSI_Submit: submit one block I/O request into a free inflight slot.
+ *
+ * Finds a free inflight slot, DMA-maps the user data buffer, fills the
+ * req_buf for that slot, builds the SG chain, calls AddBuf+Kick, and
+ * returns immediately.
+ *
+ * Returns:
+ *   0   — slot acquired, request submitted; Harvest will ReplyMsg when done
+ *  -1   — no free slot; caller should queue the request for later retry
+ *  >0   — hard failure (DMA or AddBuf); caller should set io_Error and ReplyMsg
+ */
+int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *unit,
+                        struct IOStdReq *ioreq, uint8 *cdb, uint32 cdb_len, BOOL is_write)
+{
+    struct ExecIFace *IExec = libBase->IExec;
+    struct PCIDevice *pciDev = libBase->pciDevice;
+    struct virtqueue *vq = libBase->vqs[2];
+    uint32 iobase = (uint32)libBase->bar0->Physical;
+
+    /* Find a free inflight slot */
+    int32 slot = -1;
+    uint32 i;
+    for (i = 0; i < MAX_INFLIGHT; i++) {
+        if (unit->inflight[i].ioreq == NULL) {
+            slot = (int32)i;
+            break;
+        }
+    }
+    if (slot < 0)
+        return -1; /* No free slot */
+
+    struct virtio_scsi_req_cmd  *req_cmd  = unit->req_bufs[slot];
+    struct virtio_scsi_resp_cmd *resp_cmd = unit->resp_bufs[slot];
+
+    /* Reset response fields so stale data from a previous request is gone */
+    volatile struct virtio_scsi_resp_cmd *vresp = (volatile struct virtio_scsi_resp_cmd *)resp_cmd;
+    vresp->response = 0;
+    vresp->status   = 0;
+    vresp->residual = 0;
+
+    /* Fill the request header */
+    virtio_scsi_set_lun(req_cmd->lun, (uint8)unit->target_id, (uint16)unit->lun_id);
+    req_cmd->id        = (uint64)slot; /* use slot as tag for debug */
+    req_cmd->task_attr = VIRTIO_SCSI_S_SIMPLE;
+    req_cmd->prio      = 0;
+    req_cmd->crn       = 0;
+
+    uint32 copy_len = cdb_len < VIRTIO_SCSI_CDB_SIZE ? cdb_len : VIRTIO_SCSI_CDB_SIZE;
+    for (i = 0; i < copy_len; i++)
+        req_cmd->cdb[i] = cdb[i];
+    for (i = copy_len; i < VIRTIO_SCSI_CDB_SIZE; i++)
+        req_cmd->cdb[i] = 0;
+
+    /* DMA-map the user data buffer */
+    APTR  data      = ioreq->io_Data;
+    uint32 data_len = ioreq->io_Length;
+    uint32 dma_flags = is_write ? DMA_ReadFromRAM : 0;
+
+    if (data && data_len > 0) {
+        uint32 entries = IExec->StartDMA(data, data_len, dma_flags);
+        if (entries == 0) {
+            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: StartDMA failed slot=%ld\n", (long)slot);
+            return HFERR_DMA;
+        }
+        struct DMAEntry *dlist = (struct DMAEntry *)IExec->AllocSysObjectTags(
+            ASOT_DMAENTRY, ASODMAE_NumEntries, entries, TAG_DONE);
+        if (!dlist) {
+            IExec->EndDMA(data, data_len, dma_flags | DMAF_NoModify);
+            return HFERR_DMA;
+        }
+        IExec->GetDMAList(data, data_len, dma_flags, dlist);
+        unit->inflight[slot].dma_addr        = data;
+        unit->inflight[slot].dma_size        = data_len;
+        unit->inflight[slot].dma_flags       = dma_flags;
+        unit->inflight[slot].dma_list        = dlist;
+        unit->inflight[slot].dma_num_entries = entries;
+    } else {
+        unit->inflight[slot].dma_addr        = NULL;
+        unit->inflight[slot].dma_size        = 0;
+        unit->inflight[slot].dma_flags       = 0;
+        unit->inflight[slot].dma_list        = NULL;
+        unit->inflight[slot].dma_num_entries = 0;
+    }
+
+    /* Build SG chain */
+    struct vring_sg sg[MAX_SG_ENTRIES];
+    uint32 out_num = 0;
+    uint32 in_num  = 0;
+
+    struct DMAEntry *req_dma  = unit->dma_req_lists[slot];
+    uint32  req_ent           = unit->dma_req_entries_arr[slot];
+    struct DMAEntry *resp_dma = unit->dma_resp_lists[slot];
+    uint32  resp_ent          = unit->dma_resp_entries_arr[slot];
+
+    for (i = 0; i < req_ent; i++) {
+        sg[out_num].addr = (uint32)req_dma[i].PhysicalAddress;
+        sg[out_num].len  = req_dma[i].BlockLength;
+        out_num++;
+    }
+
+    if (is_write) {
+        struct DMAEntry *dl = unit->inflight[slot].dma_list;
+        uint32 dl_ent = unit->inflight[slot].dma_num_entries;
+        for (i = 0; i < dl_ent; i++) {
+            sg[out_num].addr = (uint32)dl[i].PhysicalAddress;
+            sg[out_num].len  = dl[i].BlockLength;
+            out_num++;
+        }
+        for (i = 0; i < resp_ent; i++) {
+            sg[out_num + i].addr = (uint32)resp_dma[i].PhysicalAddress;
+            sg[out_num + i].len  = resp_dma[i].BlockLength;
+        }
+        in_num = resp_ent;
+    } else {
+        for (i = 0; i < resp_ent; i++) {
+            sg[out_num + i].addr = (uint32)resp_dma[i].PhysicalAddress;
+            sg[out_num + i].len  = resp_dma[i].BlockLength;
+        }
+        in_num = resp_ent;
+        struct DMAEntry *dl = unit->inflight[slot].dma_list;
+        uint32 dl_ent = unit->inflight[slot].dma_num_entries;
+        for (i = 0; i < dl_ent; i++) {
+            sg[out_num + in_num + i].addr = (uint32)dl[i].PhysicalAddress;
+            sg[out_num + in_num + i].len  = dl[i].BlockLength;
+        }
+        in_num += dl_ent;
+    }
+
+    if (out_num + in_num > MAX_SG_ENTRIES) {
+        DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: chain too long (%lu) slot=%ld\n",
+                out_num + in_num, (long)slot);
+        if (unit->inflight[slot].dma_list) {
+            IExec->FreeSysObject(ASOT_DMAENTRY, unit->inflight[slot].dma_list);
+            IExec->EndDMA(unit->inflight[slot].dma_addr, unit->inflight[slot].dma_size,
+                          unit->inflight[slot].dma_flags | DMAF_NoModify);
+            unit->inflight[slot].dma_list        = NULL;
+            unit->inflight[slot].dma_num_entries = 0;
+        }
+        return HFERR_DMA;
+    }
+
+    /* Mark slot occupied before AddBuf so Harvest can't race */
+    unit->inflight[slot].ioreq    = ioreq;
+    unit->inflight[slot].cookie   = (void *)req_cmd;
+    unit->inflight[slot].buf_slot = (uint32)slot;
+
+    IExec->ObtainSemaphore(&libBase->io_lock);
+    int32 rc = VirtQueue_AddBuf(IExec, vq, sg, out_num, in_num, (void *)req_cmd);
+    if (rc != 0) {
+        IExec->ReleaseSemaphore(&libBase->io_lock);
+        DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: AddBuf failed slot=%ld\n", (long)slot);
+        /* Roll back slot */
+        unit->inflight[slot].ioreq  = NULL;
+        unit->inflight[slot].cookie = NULL;
+        if (unit->inflight[slot].dma_list) {
+            IExec->FreeSysObject(ASOT_DMAENTRY, unit->inflight[slot].dma_list);
+            IExec->EndDMA(unit->inflight[slot].dma_addr, unit->inflight[slot].dma_size,
+                          unit->inflight[slot].dma_flags | DMAF_NoModify);
+            unit->inflight[slot].dma_list        = NULL;
+            unit->inflight[slot].dma_num_entries = 0;
+        }
+        return TDERR_NotSpecified;
+    }
+    VirtQueue_Kick(vq, pciDev, iobase);
+    IExec->ReleaseSemaphore(&libBase->io_lock);
+
+    DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: slot=%ld submitted cmd=0x%02X len=%lu\n",
+            (long)slot, (uint32)cdb[0], data_len);
+    return 0;
+}
+
+/*
+ * VirtIOSCSI_Harvest: drain completed VirtIO responses from the used ring.
+ *
+ * Called by the unit task after waking from the ISR signal. Loops
+ * VirtQueue_GetBuf() until no more completions are available. For each,
+ * matches the cookie to an inflight slot, fills io_Error/io_Actual,
+ * cleans up DMA, clears the slot, and calls ReplyMsg.
+ */
+void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *unit)
+{
+    struct ExecIFace *IExec = libBase->IExec;
+    uint32 written;
+    void *cookie;
+
+    while ((cookie = VirtQueue_GetBuf(IExec, libBase->vqs[2], &written)) != NULL) {
+        /* Find the inflight slot whose req_cmd matches this cookie */
+        int32 slot = -1;
+        uint32 i;
+        for (i = 0; i < MAX_INFLIGHT; i++) {
+            if (unit->inflight[i].cookie == cookie && unit->inflight[i].ioreq != NULL) {
+                slot = (int32)i;
+                break;
+            }
+        }
+
+        if (slot < 0) {
+            /* Stale or DoIO completion — not a pipeline slot, ignore */
+            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: unmatched cookie %p\n", cookie);
+            continue;
+        }
+
+        struct IOStdReq *ioreq = unit->inflight[slot].ioreq;
+        struct virtio_scsi_resp_cmd *resp_cmd = unit->resp_bufs[slot];
+
+        /* Decode result */
+        if (resp_cmd->response != VIRTIO_SCSI_S_OK || resp_cmd->status != 0) {
+            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: slot=%ld resp=0x%02X scsi_status=0x%02X\n",
+                    (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status);
+            ioreq->io_Error  = HFERR_BadStatus;
+            ioreq->io_Actual = 0;
+        } else {
+            ioreq->io_Error  = 0;
+            ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
+        }
+
+        /* Clean up per-slot user-data DMA */
+        if (unit->inflight[slot].dma_list) {
+            IExec->FreeSysObject(ASOT_DMAENTRY, unit->inflight[slot].dma_list);
+            IExec->EndDMA(unit->inflight[slot].dma_addr, unit->inflight[slot].dma_size,
+                          unit->inflight[slot].dma_flags);
+            unit->inflight[slot].dma_list        = NULL;
+            unit->inflight[slot].dma_num_entries = 0;
+        }
+
+        /* Clear the slot before ReplyMsg so the slot is available immediately */
+        unit->inflight[slot].ioreq  = NULL;
+        unit->inflight[slot].cookie = NULL;
+
+        DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: slot=%ld replied err=%d actual=%lu\n",
+                (long)slot, (int)ioreq->io_Error, ioreq->io_Actual);
+
+        IExec->ReplyMsg((struct Message *)ioreq);
+    }
 }

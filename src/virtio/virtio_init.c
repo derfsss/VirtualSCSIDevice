@@ -93,16 +93,24 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     }
 
     /*
-     * Feature negotiation: accept no optional features for now.
+     * Feature negotiation: accept VIRTIO_F_EVENT_IDX (bit 29) if offered.
      *
-     * VIRTIO_F_EVENT_IDX (bit 29) was previously negotiated but caused a
-     * kick-suppression bug: avail_event in the used ring is 0 at init time,
-     * which causes the condition to suppress all kicks after the first request.
-     * Leave EVENT_IDX disabled until the basic I/O path is proven stable.
+     * Previous bug: avail_event in the used ring is 0 at init time, and
+     * last_kick_avail_idx was also 0, so the suppression condition
+     * (new_idx - avail_event - 1) < (new_idx - old_idx) evaluated FALSE
+     * for the second kick — silently dropping all I/O after T0 L0.
+     *
+     * Fix: initialise last_kick_avail_idx = 0xFFFF so that
+     * (new_idx - old_idx) wraps to a large uint16, making the first
+     * comparison always TRUE until the device writes a real avail_event.
      */
-    uint32 guest_features = 0;
-    BOOL use_event_idx = FALSE;
-    DPRINTF(IExec, "[virtioscsi] InitVirtIO: Guest features: 0x%08lX (no optional features)\n", guest_features);
+    /* Accept EVENT_IDX (bit 29) and INDIRECT_DESC (bit 28) if offered */
+    uint32 guest_features = host_features & ((1UL << 29) | (1UL << 28));
+    BOOL use_event_idx  = (guest_features & (1UL << 29)) != 0;
+    BOOL use_indirect   = (guest_features & (1UL << 28)) != 0;
+    DPRINTF(IExec, "[virtioscsi] InitVirtIO: Guest features: 0x%08lX%s%s\n", guest_features,
+            use_event_idx ? " EVENT_IDX" : "",
+            use_indirect  ? " INDIRECT_DESC" : "");
     pciDev->OutLong(iobase + VIRTIO_PCI_GUEST_FEATURES, guest_features);
 
     /* Step 7: VirtQueue Setup */
@@ -158,7 +166,9 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         pciDev->OutLong(iobase + VIRTIO_PCI_QUEUE_PFN, pfn);
 
         vq->use_event_idx = use_event_idx;
-        vq->last_kick_avail_idx = 0;
+        /* 0xFFFF ensures the first kick always fires regardless of avail_event */
+        vq->last_kick_avail_idx = 0xFFFF;
+        vq->use_indirect = use_indirect;
         libBase->vqs[q] = vq;
         DPRINTF(IExec,
                 "[virtioscsi:virtio_init.c] InitVirtIO: Queue %u configured, virt=0x%08lX phys=0x%08lX PFN=0x%08lX\n",

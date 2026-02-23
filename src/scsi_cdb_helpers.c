@@ -30,6 +30,46 @@ void make_write10_cdb(uint8 *cdb, uint32 lba, uint16 blocks)
     cdb[9] = 0;
 }
 
+void make_read16_cdb(uint8 *cdb, uint64 lba, uint32 blocks)
+{
+    cdb[0]  = 0x88; /* READ(16) opcode */
+    cdb[1]  = 0;
+    cdb[2]  = (lba >> 56) & 0xFF;
+    cdb[3]  = (lba >> 48) & 0xFF;
+    cdb[4]  = (lba >> 40) & 0xFF;
+    cdb[5]  = (lba >> 32) & 0xFF;
+    cdb[6]  = (lba >> 24) & 0xFF;
+    cdb[7]  = (lba >> 16) & 0xFF;
+    cdb[8]  = (lba >> 8)  & 0xFF;
+    cdb[9]  = lba         & 0xFF;
+    cdb[10] = (blocks >> 24) & 0xFF;
+    cdb[11] = (blocks >> 16) & 0xFF;
+    cdb[12] = (blocks >> 8)  & 0xFF;
+    cdb[13] = blocks          & 0xFF;
+    cdb[14] = 0; /* Group number */
+    cdb[15] = 0; /* Control */
+}
+
+void make_write16_cdb(uint8 *cdb, uint64 lba, uint32 blocks)
+{
+    cdb[0]  = 0x8A; /* WRITE(16) opcode */
+    cdb[1]  = 0;
+    cdb[2]  = (lba >> 56) & 0xFF;
+    cdb[3]  = (lba >> 48) & 0xFF;
+    cdb[4]  = (lba >> 40) & 0xFF;
+    cdb[5]  = (lba >> 32) & 0xFF;
+    cdb[6]  = (lba >> 24) & 0xFF;
+    cdb[7]  = (lba >> 16) & 0xFF;
+    cdb[8]  = (lba >> 8)  & 0xFF;
+    cdb[9]  = lba         & 0xFF;
+    cdb[10] = (blocks >> 24) & 0xFF;
+    cdb[11] = (blocks >> 16) & 0xFF;
+    cdb[12] = (blocks >> 8)  & 0xFF;
+    cdb[13] = blocks          & 0xFF;
+    cdb[14] = 0;
+    cdb[15] = 0;
+}
+
 int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevUnit *unit)
 {
     if (!unit || unit->geometry_valid)

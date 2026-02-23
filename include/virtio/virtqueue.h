@@ -4,9 +4,22 @@
 #include <exec/types.h>
 
 /* VirtQueue Descriptor Flags */
-#define VRING_DESC_F_NEXT 1
-#define VRING_DESC_F_WRITE 2
+#define VRING_DESC_F_NEXT     1
+#define VRING_DESC_F_WRITE    2
 #define VRING_DESC_F_INDIRECT 4
+
+/*
+ * Indirect descriptor table entry (VIRTIO_F_INDIRECT_DESC).
+ * Same layout as vring_desc but used inside the indirect table buffer;
+ * the 'next' field is unused — the table is a flat array, not a chain.
+ */
+struct vring_indirect_desc
+{
+    uint64 addr;
+    uint32 len;
+    uint16 flags;
+    uint16 next; /* unused */
+} __attribute__((packed));
 
 /* VirtQueue Available Ring Flags */
 #define VRING_AVAIL_F_NO_INTERRUPT 1
@@ -89,6 +102,12 @@ struct virtqueue
      * We only notify when avail->idx crosses avail_event. */
     BOOL   use_event_idx; /* TRUE if VIRTIO_F_EVENT_IDX was negotiated */
     uint16 last_kick_avail_idx; /* avail->idx value at last Kick */
+
+    /* VIRTIO_F_INDIRECT_DESC: entire SG chain in one heap buffer.
+     * indirect_tables[i] holds the virtual address of the indirect table
+     * for descriptor slot i (NULL = direct descriptor, no table). */
+    BOOL   use_indirect;      /* TRUE if VIRTIO_F_INDIRECT_DESC negotiated */
+    void **indirect_tables;   /* one entry per descriptor slot, like cookies[] */
 };
 
 /* Function Prototypes */
@@ -102,9 +121,10 @@ void VirtQueue_Free(struct ExecIFace *IExec, struct virtqueue *vq);
  * Add a buffer chain to the virtqueue's available ring.
  * sg[] contains out_num device-readable entries followed by in_num device-writable entries.
  * cookie is returned by GetBuf when the device completes the request.
+ * IExec is required for indirect descriptor table allocation (VIRTIO_F_INDIRECT_DESC).
  * Returns 0 on success, -1 on failure (no free descriptors).
  */
-int32 VirtQueue_AddBuf(struct virtqueue *vq, struct vring_sg *sg, uint32 out_num, uint32 in_num, void *cookie);
+int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vring_sg *sg, uint32 out_num, uint32 in_num, void *cookie);
 
 /*
  * Notify the device that new buffers are available.
@@ -116,7 +136,8 @@ void VirtQueue_Kick(struct virtqueue *vq, struct PCIDevice *pciDev, uint32 iobas
  * Check for completed buffers in the used ring.
  * Returns the cookie for a completed buffer, or NULL if none ready.
  * *len_out receives the number of bytes written by the device (if non-NULL).
+ * IExec is required to free indirect descriptor tables on completion.
  */
-void *VirtQueue_GetBuf(struct virtqueue *vq, uint32 *len_out);
+void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *len_out);
 
 #endif /* VIRTQUEUE_H */

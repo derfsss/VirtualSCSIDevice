@@ -53,7 +53,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
         struct ExecIFace *IExec = base->IExec;
         for (int i = 0; i < 8; i++) {
             struct VirtIOUSCSIDevUnit *unit = base->units[i];
-            if (unit && unit->io_wait_task && unit->io_cookie) {
+            if (unit && unit->io_wait_task) {
                 IExec->Signal(unit->io_wait_task, unit->io_signal_mask);
             }
         }

@@ -70,15 +70,24 @@ struct VirtIOUSCSIDevUnit
     uint32          io_port_mask;   /* Precomputed 1 << io_port->mp_SigBit */
     BOOL            task_shutdown;  /* Set TRUE to request task exit */
 
-    /* Per-unit in-flight tracking (written by unit task, read by ISR) */
-    struct Task    *io_wait_task;   /* Unit task sleeping for I/O completion */
-    uint32          io_signal_mask; /* Signal mask for that task */
-    void           *io_cookie;      /* Expected req_cmd cookie; NULL = ISR cleared it */
+    /*
+     * Persistent ISR signal: the unit task allocates one signal bit at startup
+     * and stores it here. The ISR fires this to wake the task on any VirtIO
+     * completion for this unit.
+     *
+     * In the synchronous DoIO path (HD_SCSICMD, discovery), io_wait_task and
+     * io_signal_mask are set/cleared per-call (old behaviour, kept for compat).
+     * In the pipeline path (block I/O), io_wait_task == task permanently so the
+     * ISR signals the unit task on every completion.
+     */
+    struct Task    *io_wait_task;   /* Task to signal on VirtIO completion */
+    uint32          io_signal_mask; /* Signal mask for io_wait_task */
+    void           *io_cookie;      /* Unused in pipeline path; kept for DoIO compat */
 
     /*
      * Pre-allocated I/O buffers (set up at UnitTask_Start, freed at Shutdown).
      * req_buf and resp_buf are MEMF_SHARED allocations with DMA mappings kept
-     * live for the unit's lifetime, eliminating per-request alloc/DMA overhead.
+     * live for the unit's lifetime. Used by the synchronous VirtIOSCSI_DoIO path.
      */
     struct virtio_scsi_req_cmd  *req_buf;          /* VirtIO SCSI request header */
     struct virtio_scsi_resp_cmd *resp_buf;          /* VirtIO SCSI response buffer */
@@ -86,6 +95,39 @@ struct VirtIOUSCSIDevUnit
     uint32                       dma_req_entries;   /* Entry count from StartDMA */
     struct DMAEntry             *dma_resp_list;     /* DMA scatter list for resp_buf */
     uint32                       dma_resp_entries;  /* Entry count from StartDMA */
+
+    /*
+     * Pipeline inflight table (Phase 7): allows multiple block I/O requests
+     * to be submitted to VirtIO without waiting for each to complete.
+     * Slot 0 is also used by the synchronous path to avoid double-allocation.
+     * ioreq == NULL means the slot is free.
+     */
+#define MAX_INFLIGHT 8
+
+    struct {
+        struct IOStdReq *ioreq;    /* NULL = slot free */
+        void            *cookie;   /* req_cmd ptr for VirtQueue_GetBuf matching */
+        /* User-data DMA buffer for this in-flight request */
+        APTR             dma_addr;
+        uint32           dma_size;
+        uint32           dma_flags;
+        struct DMAEntry *dma_list;
+        uint32           dma_num_entries;
+        /* Which pre-alloc slot's req_buf/resp_buf this uses */
+        uint32           buf_slot;
+        /* Decoded result for ReplyMsg (set by Harvest, read nowhere — ReplyMsg done inline) */
+        uint8            scsi_status;
+        uint32           residual;
+    } inflight[MAX_INFLIGHT];
+
+    /* Per-slot pre-allocated req/resp buffers with permanent DMA mappings.
+     * Slots 1..MAX_INFLIGHT-1 are additional pipeline buffers beyond req_buf. */
+    struct virtio_scsi_req_cmd  *req_bufs[MAX_INFLIGHT];  /* [0] == req_buf */
+    struct virtio_scsi_resp_cmd *resp_bufs[MAX_INFLIGHT]; /* [0] == resp_buf */
+    struct DMAEntry             *dma_req_lists[MAX_INFLIGHT];
+    uint32                       dma_req_entries_arr[MAX_INFLIGHT];
+    struct DMAEntry             *dma_resp_lists[MAX_INFLIGHT];
+    uint32                       dma_resp_entries_arr[MAX_INFLIGHT];
 };
 
 /* Prototypes for _man functions */

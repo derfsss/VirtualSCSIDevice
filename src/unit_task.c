@@ -15,106 +15,131 @@ static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
 /* -------------------------------------------------------------------------
  * preallocate_unit_dma / free_unit_dma
  *
- * Allocate req_buf and resp_buf as MEMF_SHARED (DMA-capable) memory and
- * establish permanent DMA mappings. Called once at unit open, freed once at
- * unit close. Eliminates per-request AllocVecTags + StartDMA overhead.
+ * Allocate MAX_INFLIGHT req/resp buffer pairs as MEMF_SHARED (DMA-capable)
+ * memory and establish permanent DMA mappings. Slot 0 is also aliased via
+ * unit->req_buf / unit->resp_buf for use by the synchronous VirtIOSCSI_DoIO
+ * path (discovery, HD_SCSICMD). All pipeline slots are ready for Submit.
  * ---------------------------------------------------------------------- */
+static BOOL alloc_one_slot(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit, uint32 s)
+{
+    unit->req_bufs[s] = IExec->AllocVecTags(sizeof(struct virtio_scsi_req_cmd),
+                                             AVT_ClearWithValue, 0,
+                                             AVT_Type, MEMF_SHARED,
+                                             TAG_DONE);
+    if (!unit->req_bufs[s])
+        return FALSE;
+
+    unit->resp_bufs[s] = IExec->AllocVecTags(sizeof(struct virtio_scsi_resp_cmd),
+                                              AVT_ClearWithValue, 0,
+                                              AVT_Type, MEMF_SHARED,
+                                              TAG_DONE);
+    if (!unit->resp_bufs[s]) {
+        IExec->FreeVec(unit->req_bufs[s]);
+        unit->req_bufs[s] = NULL;
+        return FALSE;
+    }
+
+    unit->dma_req_entries_arr[s] = IExec->StartDMA(unit->req_bufs[s],
+                                                     sizeof(struct virtio_scsi_req_cmd),
+                                                     DMA_ReadFromRAM);
+    if (unit->dma_req_entries_arr[s] == 0) goto fail_resp;
+
+    unit->dma_req_lists[s] = (struct DMAEntry *)IExec->AllocSysObjectTags(
+        ASOT_DMAENTRY, ASODMAE_NumEntries, unit->dma_req_entries_arr[s], TAG_DONE);
+    if (!unit->dma_req_lists[s]) {
+        IExec->EndDMA(unit->req_bufs[s], sizeof(struct virtio_scsi_req_cmd),
+                      DMA_ReadFromRAM | DMAF_NoModify);
+        unit->dma_req_entries_arr[s] = 0;
+        goto fail_resp;
+    }
+    IExec->GetDMAList(unit->req_bufs[s], sizeof(struct virtio_scsi_req_cmd),
+                      DMA_ReadFromRAM, unit->dma_req_lists[s]);
+
+    unit->dma_resp_entries_arr[s] = IExec->StartDMA(unit->resp_bufs[s],
+                                                      sizeof(struct virtio_scsi_resp_cmd),
+                                                      0 /* device writes = IN */);
+    if (unit->dma_resp_entries_arr[s] == 0) {
+        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_req_lists[s]);
+        unit->dma_req_lists[s] = NULL;
+        IExec->EndDMA(unit->req_bufs[s], sizeof(struct virtio_scsi_req_cmd),
+                      DMA_ReadFromRAM | DMAF_NoModify);
+        unit->dma_req_entries_arr[s] = 0;
+        goto fail_resp;
+    }
+    unit->dma_resp_lists[s] = (struct DMAEntry *)IExec->AllocSysObjectTags(
+        ASOT_DMAENTRY, ASODMAE_NumEntries, unit->dma_resp_entries_arr[s], TAG_DONE);
+    if (!unit->dma_resp_lists[s]) {
+        IExec->EndDMA(unit->resp_bufs[s], sizeof(struct virtio_scsi_resp_cmd), DMAF_NoModify);
+        unit->dma_resp_entries_arr[s] = 0;
+        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_req_lists[s]);
+        unit->dma_req_lists[s] = NULL;
+        IExec->EndDMA(unit->req_bufs[s], sizeof(struct virtio_scsi_req_cmd),
+                      DMA_ReadFromRAM | DMAF_NoModify);
+        unit->dma_req_entries_arr[s] = 0;
+        goto fail_resp;
+    }
+    IExec->GetDMAList(unit->resp_bufs[s], sizeof(struct virtio_scsi_resp_cmd),
+                      0, unit->dma_resp_lists[s]);
+    return TRUE;
+
+fail_resp:
+    IExec->FreeVec(unit->resp_bufs[s]);
+    unit->resp_bufs[s] = NULL;
+    IExec->FreeVec(unit->req_bufs[s]);
+    unit->req_bufs[s] = NULL;
+    return FALSE;
+}
+
+static void free_one_slot(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit, uint32 s)
+{
+    if (unit->dma_resp_lists[s]) {
+        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_resp_lists[s]);
+        unit->dma_resp_lists[s] = NULL;
+    }
+    if (unit->dma_resp_entries_arr[s] > 0 && unit->resp_bufs[s]) {
+        IExec->EndDMA(unit->resp_bufs[s], sizeof(struct virtio_scsi_resp_cmd), DMAF_NoModify);
+        unit->dma_resp_entries_arr[s] = 0;
+    }
+    if (unit->dma_req_lists[s]) {
+        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_req_lists[s]);
+        unit->dma_req_lists[s] = NULL;
+    }
+    if (unit->dma_req_entries_arr[s] > 0 && unit->req_bufs[s]) {
+        IExec->EndDMA(unit->req_bufs[s], sizeof(struct virtio_scsi_req_cmd),
+                      DMA_ReadFromRAM | DMAF_NoModify);
+        unit->dma_req_entries_arr[s] = 0;
+    }
+    if (unit->resp_bufs[s]) { IExec->FreeVec(unit->resp_bufs[s]); unit->resp_bufs[s] = NULL; }
+    if (unit->req_bufs[s])  { IExec->FreeVec(unit->req_bufs[s]);  unit->req_bufs[s]  = NULL; }
+}
+
 static BOOL preallocate_unit_dma(struct VirtIOSCSIBase *libBase,
                                   struct VirtIOUSCSIDevUnit *unit)
 {
     struct ExecIFace *IExec = libBase->IExec;
+    uint32 s;
 
-    /* Allocate req_buf */
-    unit->req_buf = IExec->AllocVecTags(sizeof(struct virtio_scsi_req_cmd),
-                                        AVT_ClearWithValue, 0,
-                                        AVT_Type, MEMF_SHARED,
-                                        TAG_DONE);
-    if (!unit->req_buf) {
-        DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: req_buf alloc failed\n");
-        return FALSE;
-    }
-
-    /* Allocate resp_buf */
-    unit->resp_buf = IExec->AllocVecTags(sizeof(struct virtio_scsi_resp_cmd),
-                                         AVT_ClearWithValue, 0,
-                                         AVT_Type, MEMF_SHARED,
-                                         TAG_DONE);
-    if (!unit->resp_buf) {
-        DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: resp_buf alloc failed\n");
-        IExec->FreeVec(unit->req_buf);
-        unit->req_buf = NULL;
-        return FALSE;
+    for (s = 0; s < MAX_INFLIGHT; s++) {
+        if (!alloc_one_slot(IExec, unit, s)) {
+            DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: slot %lu alloc failed\n", s);
+            /* Free already-allocated slots */
+            uint32 k;
+            for (k = 0; k < s; k++)
+                free_one_slot(IExec, unit, k);
+            return FALSE;
+        }
     }
 
-    /* DMA-map req_buf */
-    unit->dma_req_entries = IExec->StartDMA(unit->req_buf,
-                                             sizeof(struct virtio_scsi_req_cmd),
-                                             DMA_ReadFromRAM);
-    if (unit->dma_req_entries == 0) {
-        DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: StartDMA(req) failed\n");
-        IExec->FreeVec(unit->resp_buf);
-        IExec->FreeVec(unit->req_buf);
-        unit->resp_buf = NULL;
-        unit->req_buf  = NULL;
-        return FALSE;
-    }
-    unit->dma_req_list = IExec->AllocSysObjectTags(ASOT_DMAENTRY,
-                                                    ASODMAE_NumEntries, unit->dma_req_entries,
-                                                    TAG_DONE);
-    if (!unit->dma_req_list) {
-        IExec->EndDMA(unit->req_buf, sizeof(struct virtio_scsi_req_cmd),
-                      DMA_ReadFromRAM | DMAF_NoModify);
-        unit->dma_req_entries = 0;
-        IExec->FreeVec(unit->resp_buf);
-        IExec->FreeVec(unit->req_buf);
-        unit->resp_buf = NULL;
-        unit->req_buf  = NULL;
-        return FALSE;
-    }
-    IExec->GetDMAList(unit->req_buf, sizeof(struct virtio_scsi_req_cmd),
-                      DMA_ReadFromRAM, unit->dma_req_list);
+    /* Alias slot 0 for the synchronous DoIO path */
+    unit->req_buf          = unit->req_bufs[0];
+    unit->resp_buf         = unit->resp_bufs[0];
+    unit->dma_req_list     = unit->dma_req_lists[0];
+    unit->dma_req_entries  = unit->dma_req_entries_arr[0];
+    unit->dma_resp_list    = unit->dma_resp_lists[0];
+    unit->dma_resp_entries = unit->dma_resp_entries_arr[0];
 
-    /* DMA-map resp_buf */
-    unit->dma_resp_entries = IExec->StartDMA(unit->resp_buf,
-                                              sizeof(struct virtio_scsi_resp_cmd),
-                                              0 /* device writes = IN */);
-    if (unit->dma_resp_entries == 0) {
-        DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: StartDMA(resp) failed\n");
-        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_req_list);
-        IExec->EndDMA(unit->req_buf, sizeof(struct virtio_scsi_req_cmd),
-                      DMA_ReadFromRAM | DMAF_NoModify);
-        unit->dma_req_entries = 0;
-        unit->dma_req_list    = NULL;
-        IExec->FreeVec(unit->resp_buf);
-        IExec->FreeVec(unit->req_buf);
-        unit->resp_buf = NULL;
-        unit->req_buf  = NULL;
-        return FALSE;
-    }
-    unit->dma_resp_list = IExec->AllocSysObjectTags(ASOT_DMAENTRY,
-                                                     ASODMAE_NumEntries, unit->dma_resp_entries,
-                                                     TAG_DONE);
-    if (!unit->dma_resp_list) {
-        IExec->EndDMA(unit->resp_buf, sizeof(struct virtio_scsi_resp_cmd),
-                      DMAF_NoModify);
-        unit->dma_resp_entries = 0;
-        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_req_list);
-        IExec->EndDMA(unit->req_buf, sizeof(struct virtio_scsi_req_cmd),
-                      DMA_ReadFromRAM | DMAF_NoModify);
-        unit->dma_req_entries = 0;
-        unit->dma_req_list    = NULL;
-        IExec->FreeVec(unit->resp_buf);
-        IExec->FreeVec(unit->req_buf);
-        unit->resp_buf = NULL;
-        unit->req_buf  = NULL;
-        return FALSE;
-    }
-    IExec->GetDMAList(unit->resp_buf, sizeof(struct virtio_scsi_resp_cmd),
-                      0, unit->dma_resp_list);
-
-    DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: unit %lu DMA ready "
-            "(req_entries=%lu resp_entries=%lu)\n",
-            unit->unit_num, unit->dma_req_entries, unit->dma_resp_entries);
+    DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: unit %lu %d slots ready\n",
+            unit->unit_num, MAX_INFLIGHT);
     return TRUE;
 }
 
@@ -122,34 +147,18 @@ static void free_unit_dma(struct VirtIOSCSIBase *libBase,
                            struct VirtIOUSCSIDevUnit *unit)
 {
     struct ExecIFace *IExec = libBase->IExec;
+    uint32 s;
 
-    if (unit->dma_resp_list) {
-        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_resp_list);
-        unit->dma_resp_list = NULL;
-    }
-    if (unit->dma_resp_entries > 0 && unit->resp_buf) {
-        IExec->EndDMA(unit->resp_buf, sizeof(struct virtio_scsi_resp_cmd), DMAF_NoModify);
-        unit->dma_resp_entries = 0;
-    }
+    for (s = 0; s < MAX_INFLIGHT; s++)
+        free_one_slot(IExec, unit, s);
 
-    if (unit->dma_req_list) {
-        IExec->FreeSysObject(ASOT_DMAENTRY, unit->dma_req_list);
-        unit->dma_req_list = NULL;
-    }
-    if (unit->dma_req_entries > 0 && unit->req_buf) {
-        IExec->EndDMA(unit->req_buf, sizeof(struct virtio_scsi_req_cmd),
-                      DMA_ReadFromRAM | DMAF_NoModify);
-        unit->dma_req_entries = 0;
-    }
-
-    if (unit->resp_buf) {
-        IExec->FreeVec(unit->resp_buf);
-        unit->resp_buf = NULL;
-    }
-    if (unit->req_buf) {
-        IExec->FreeVec(unit->req_buf);
-        unit->req_buf = NULL;
-    }
+    /* Clear the slot-0 aliases */
+    unit->req_buf          = NULL;
+    unit->resp_buf         = NULL;
+    unit->dma_req_list     = NULL;
+    unit->dma_req_entries  = 0;
+    unit->dma_resp_list    = NULL;
+    unit->dma_resp_entries = 0;
 
     DPRINTF(IExec, "[virtioscsi:unit_task.c] free_unit_dma: unit %lu DMA freed\n", unit->unit_num);
 }
@@ -188,21 +197,72 @@ void UnitTask_Entry(void)
     unit->task         = self;
     unit->task_shutdown = FALSE;
 
+    /*
+     * Allocate a persistent signal bit for VirtIO completion notifications.
+     * The ISR signals this whenever it detects a VirtIO interrupt for any
+     * unit. We register ourselves permanently (not per-request) so the
+     * ISR can signal without DoIO-style per-call setup.
+     */
+    int8 isr_bit = IExec->AllocSignal(-1);
+    if (isr_bit < 0) {
+        DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: AllocSignal for ISR failed\n");
+        IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
+        IExec->FreeSysObject(ASOT_PORT, unit->io_port);
+        unit->io_port      = NULL;
+        unit->io_port_mask = 0;
+        unit->task         = NULL;
+        return;
+    }
+    unit->io_signal_mask = 1UL << isr_bit;
+    unit->io_wait_task   = self; /* persistent — ISR signals us on every completion */
+    unit->io_cookie      = (void *)1; /* non-NULL so ISR check fires; actual matching is in Harvest */
+
     /* Signal parent: port is ready, it's safe to PutMsg to us now */
     IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
     /* startMsg is stack-allocated in UnitTask_Start — do NOT touch it after this signal */
 
-    /* ---- Main event loop ---- */
+    uint32 wait_mask = unit->io_port_mask | unit->io_signal_mask | SIGBREAKF_CTRL_C;
+
+    /* ---- Main pipeline event loop ---- */
     while (!unit->task_shutdown) {
-        uint32 sigs = IExec->Wait(unit->io_port_mask | SIGBREAKF_CTRL_C);
+        uint32 sigs = IExec->Wait(wait_mask);
 
         if (sigs & SIGBREAKF_CTRL_C)
             break;
 
-        struct IOStdReq *ioreq;
-        while ((ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port)) != NULL) {
-            UnitTask_Dispatch(libBase, unit, ioreq);
-            IExec->ReplyMsg((struct Message *)ioreq);
+        /* Harvest completions first — frees inflight slots before we try to fill more */
+        if (sigs & unit->io_signal_mask)
+            VirtIOSCSI_Harvest(libBase, unit);
+
+        /* Dispatch new requests from the port */
+        if (sigs & unit->io_port_mask) {
+            struct IOStdReq *ioreq;
+            while ((ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port)) != NULL) {
+                UnitTask_Dispatch(libBase, unit, ioreq);
+                /* NOTE: UnitTask_Dispatch replies synchronous commands (HD_SCSICMD etc.)
+                 * itself. Pipeline block I/O commands mark ioreq in an inflight slot and
+                 * return WITHOUT replying — Harvest will ReplyMsg when VirtIO completes. */
+            }
+        }
+    }
+
+    /* Drain: abort any inflight pipeline requests */
+    {
+        uint32 s;
+        for (s = 0; s < MAX_INFLIGHT; s++) {
+            if (unit->inflight[s].ioreq) {
+                unit->inflight[s].ioreq->io_Error = IOERR_ABORTED;
+                IExec->ReplyMsg((struct Message *)unit->inflight[s].ioreq);
+                unit->inflight[s].ioreq  = NULL;
+                unit->inflight[s].cookie = NULL;
+                if (unit->inflight[s].dma_list) {
+                    IExec->FreeSysObject(ASOT_DMAENTRY, unit->inflight[s].dma_list);
+                    IExec->EndDMA(unit->inflight[s].dma_addr, unit->inflight[s].dma_size,
+                                  unit->inflight[s].dma_flags | DMAF_NoModify);
+                    unit->inflight[s].dma_list        = NULL;
+                    unit->inflight[s].dma_num_entries = 0;
+                }
+            }
         }
     }
 
@@ -214,6 +274,12 @@ void UnitTask_Entry(void)
             IExec->ReplyMsg((struct Message *)ioreq);
         }
     }
+
+    /* Remove ISR registration */
+    unit->io_wait_task   = NULL;
+    unit->io_cookie      = NULL;
+    unit->io_signal_mask = 0;
+    IExec->FreeSignal(isr_bit);
 
     IExec->FreeSysObject(ASOT_PORT, unit->io_port);
     unit->io_port      = NULL;
@@ -338,39 +404,133 @@ void UnitTask_Shutdown(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit
 }
 
 /* -------------------------------------------------------------------------
+ * make_block_cdb
+ *
+ * Build a READ or WRITE CDB for a block I/O IORequest and call Submit.
+ * Returns TRUE if the request was submitted (Harvest will ReplyMsg later).
+ * Returns FALSE on hard failure — caller must set io_Error and ReplyMsg.
+ *
+ * The function handles 32-bit (CMD_READ/WRITE, TD_READ64/WRITE64) and
+ * 64-bit NSCMD variants transparently.
+ * ---------------------------------------------------------------------- */
+static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
+                             struct VirtIOUSCSIDevUnit *unit,
+                             struct IOStdReq *ioreq,
+                             uint64 offset64, BOOL is_write)
+{
+    uint32 blksz = (unit->geometry_valid && unit->block_size) ? unit->block_size : 512;
+
+    uint64 lba    = offset64 / blksz;
+    uint32 blocks = ioreq->io_Length / blksz;
+    if (blocks == 0) blocks = 1;
+
+    uint8  cdb[16];
+    uint32 cdb_len;
+    if (lba > 0xFFFFFFFFULL) {
+        if (is_write) make_write16_cdb(cdb, lba, blocks);
+        else          make_read16_cdb(cdb,  lba, blocks);
+        cdb_len = 16;
+    } else {
+        if (is_write) make_write10_cdb(cdb, (uint32)lba, (uint16)blocks);
+        else          make_read10_cdb(cdb,  (uint32)lba, (uint16)blocks);
+        cdb_len = 10;
+    }
+
+    int32 rc = VirtIOSCSI_Submit(libBase, unit, ioreq, cdb, cdb_len, is_write);
+    if (rc == 0)
+        return TRUE; /* async — Harvest will ReplyMsg */
+
+    if (rc == -1) {
+        /* No inflight slot — fall back to synchronous DoIO */
+        uint8  scsi_status = 0;
+        uint32 residual    = 0;
+        int32  sync_rc = VirtIOSCSI_DoIO(libBase, unit, unit->target_id, unit->lun_id,
+                                          cdb, cdb_len,
+                                          (uint8 *)ioreq->io_Data, ioreq->io_Length,
+                                          is_write, &scsi_status, &residual);
+        if (sync_rc != 0) {
+            ioreq->io_Error  = (BYTE)sync_rc;
+            ioreq->io_Actual = 0;
+        } else {
+            ioreq->io_Error  = 0;
+            ioreq->io_Actual = ioreq->io_Length - residual;
+        }
+    } else {
+        /* Hard failure from Submit */
+        ioreq->io_Error  = (BYTE)rc;
+        ioreq->io_Actual = 0;
+    }
+    return FALSE; /* caller must ReplyMsg */
+}
+
+/* -------------------------------------------------------------------------
  * UnitTask_Dispatch
  *
  * Called from the unit task's event loop for each IORequest dequeued from
- * the message port. Sets io_Error / io_Actual; caller calls ReplyMsg.
+ * the message port.
+ *
+ * Block I/O commands (CMD_READ, CMD_WRITE, TD_*64, NSCMD_TD_*64) are
+ * submitted to VirtIO asynchronously via VirtIOSCSI_Submit(). On success
+ * the request is HELD in an inflight slot — do NOT call ReplyMsg. Harvest
+ * will reply when VirtIO signals completion.
+ *
+ * All other commands (geometry, SCSI pass-through, no-ops) complete
+ * synchronously and are replied to immediately by this function.
  * ---------------------------------------------------------------------- */
 static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                                struct VirtIOUSCSIDevUnit *unit,
                                struct IOStdReq *ioreq)
 {
+    struct ExecIFace *IExec = libBase->IExec;
+    BOOL submitted = FALSE;
+
     switch (ioreq->io_Command) {
 
+    /* ---- 32-bit block I/O ---- */
     case CMD_READ:
     case ETD_READ:
-        Handle_CMD_Read(libBase, ioreq);
+        submitted = submit_block_io(libBase, unit, ioreq,
+                                    (uint64)ioreq->io_Offset, FALSE);
         break;
 
     case CMD_WRITE:
     case TD_FORMAT:
     case ETD_FORMAT:
     case ETD_WRITE:
-        Handle_CMD_Write(libBase, ioreq);
+        submitted = submit_block_io(libBase, unit, ioreq,
+                                    (uint64)ioreq->io_Offset, TRUE);
         break;
 
+    /* ---- Legacy 64-bit block I/O ---- */
+    case TD_READ64:
+        submitted = submit_block_io(libBase, unit, ioreq,
+                                    ((uint64)ioreq->io_Actual << 32) | ioreq->io_Offset, FALSE);
+        break;
+    case TD_WRITE64:
+    case TD_FORMAT64:
+        submitted = submit_block_io(libBase, unit, ioreq,
+                                    ((uint64)ioreq->io_Actual << 32) | ioreq->io_Offset, TRUE);
+        break;
+
+    /* ---- NSD 64-bit block I/O ---- */
+    case NSCMD_TD_READ64:
+    case NSCMD_ETD_READ64:
+        submitted = submit_block_io(libBase, unit, ioreq,
+                                    ((uint64)ioreq->io_Actual << 32) | ioreq->io_Offset, FALSE);
+        break;
+    case NSCMD_TD_WRITE64:
+    case NSCMD_TD_FORMAT64:
+    case NSCMD_ETD_WRITE64:
+    case NSCMD_ETD_FORMAT64:
+        submitted = submit_block_io(libBase, unit, ioreq,
+                                    ((uint64)ioreq->io_Actual << 32) | ioreq->io_Offset, TRUE);
+        break;
+
+    /* ---- Synchronous commands — reply immediately ---- */
     case CMD_UPDATE:
     case CMD_FLUSH:
     case ETD_UPDATE:
         Handle_CMD_Update(libBase, ioreq);
-        break;
-
-    case TD_READ64:
-    case TD_WRITE64:
-    case TD_FORMAT64:
-        Handle_TD_IO64(libBase, ioreq);
         break;
 
     case TD_GETGEOMETRY:
@@ -379,15 +539,6 @@ static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
 
     case HD_SCSICMD:
         Parse_SCSI_Command(libBase, ioreq);
-        break;
-
-    case NSCMD_TD_READ64:
-    case NSCMD_TD_WRITE64:
-    case NSCMD_TD_FORMAT64:
-    case NSCMD_ETD_READ64:
-    case NSCMD_ETD_WRITE64:
-    case NSCMD_ETD_FORMAT64:
-        Handle_NS_TD_IO64(libBase, ioreq);
         break;
 
     case NSCMD_TD_GETGEOMETRY64:
@@ -407,4 +558,8 @@ static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
         ioreq->io_Error = IOERR_NOCMD;
         break;
     }
+
+    /* For synchronous commands (not submitted asynchronously), reply now */
+    if (!submitted)
+        IExec->ReplyMsg((struct Message *)ioreq);
 }

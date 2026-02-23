@@ -23,26 +23,37 @@ void Handle_TD_IO64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     struct VirtIOUSCSIDevUnit *unit = (struct VirtIOUSCSIDevUnit *)req->io_Unit;
     uint32 blksz = (unit && unit->geometry_valid && unit->block_size) ? unit->block_size : 512;
 
-    uint32 lba = (uint32)(offset64 / blksz);
+    uint64 lba = offset64 / blksz;
     uint32 blocks = length / blksz;
     if (blocks == 0)
         blocks = 1;
 
     BOOL is_write = (req->io_Command == TD_WRITE64 || req->io_Command == (TD_FORMAT64));
 
-    uint8 cdb[10];
-    if (is_write)
-        make_write10_cdb(cdb, lba, (uint16)blocks);
-    else
-        make_read10_cdb(cdb, lba, (uint16)blocks);
-
     uint8 scsi_status = 0;
     uint32 residual = 0;
+    int32 rc;
 
-    int32 rc = VirtIOSCSI_DoIO(libBase, unit, unit->target_id, unit->lun_id, cdb, 10, data, length, is_write, &scsi_status,
-                               &residual);
+    if (lba > 0xFFFFFFFFULL) {
+        /* Disk > 2TB: use READ(16)/WRITE(16) with 64-bit LBA */
+        uint8 cdb[16];
+        if (is_write)
+            make_write16_cdb(cdb, lba, blocks);
+        else
+            make_read16_cdb(cdb, lba, blocks);
+        rc = VirtIOSCSI_DoIO(libBase, unit, unit->target_id, unit->lun_id, cdb, 16, data, length, is_write, &scsi_status,
+                             &residual);
+    } else {
+        uint8 cdb[10];
+        if (is_write)
+            make_write10_cdb(cdb, (uint32)lba, (uint16)blocks);
+        else
+            make_read10_cdb(cdb, (uint32)lba, (uint16)blocks);
+        rc = VirtIOSCSI_DoIO(libBase, unit, unit->target_id, unit->lun_id, cdb, 10, data, length, is_write, &scsi_status,
+                             &residual);
+    }
 
-    if (rc != 0) {
+    if (rc != 0) { /* rc declared above */
         req->io_Error = (BYTE)rc;
         req->io_Actual = 0;
     } else {
