@@ -93,27 +93,19 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     }
 
     /*
-     * Feature negotiation: accept VIRTIO_F_EVENT_IDX (bit 29) if offered.
+     * Feature negotiation.
      *
-     * Previous bug: avail_event in the used ring is 0 at init time, and
-     * last_kick_avail_idx was also 0, so the suppression condition
-     * (new_idx - avail_event - 1) < (new_idx - old_idx) evaluated FALSE
-     * for the second kick — silently dropping all I/O after T0 L0.
+     * VIRTIO_F_EVENT_IDX (bit 29): accepted. Enables interrupt coalescing
+     * via used_event (driver writes target used->idx into avail->ring[num]).
+     * The kick-suppression half (avail_event) is NOT used — QEMU legacy mode
+     * never writes avail_event so it stays 0, which would suppress all kicks
+     * after the first. VirtIOSCSI_Kick always sends an unconditional notify.
      *
-     * Fix: initialise last_kick_avail_idx = 0xFFFF so that
-     * (new_idx - old_idx) wraps to a large uint16, making the first
-     * comparison always TRUE until the device writes a real avail_event.
-     */
-    /*
-     * Accept VIRTIO_F_EVENT_IDX (bit 29) only.
-     *
-     * VIRTIO_F_INDIRECT_DESC (bit 28) is NOT negotiated: QEMU's legacy
-     * VirtIO SCSI implementation reads indirect descriptor table entries as
-     * little-endian, but we are a big-endian (PPC) guest filling them in
-     * native byte order. This causes QEMU to see garbage lengths and report
-     * "wrong size for virtio-scsi headers". The direct chained-descriptor
-     * path works correctly and supports up to MAX_SG_ENTRIES=64 entries,
-     * which is sufficient for all practical transfer sizes.
+     * VIRTIO_F_INDIRECT_DESC (bit 28): NOT accepted. QEMU legacy VirtIO reads
+     * indirect descriptor entries as little-endian; our PPC guest fills them
+     * in native big-endian order, producing garbage lengths ("wrong size for
+     * virtio-scsi headers"). The direct chained-descriptor path is used
+     * instead and supports up to MAX_SG_ENTRIES=64 per request.
      */
     uint32 guest_features = host_features & (1UL << 29); /* EVENT_IDX only */
     BOOL use_event_idx  = (guest_features & (1UL << 29)) != 0;
@@ -123,8 +115,7 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     (void)use_indirect; /* suppress unused-variable warning */
     pciDev->OutLong(iobase + VIRTIO_PCI_GUEST_FEATURES, guest_features);
 
-    /* Step 7: VirtQueue Setup */
-    /* VirtIO SCSI has 3 queues: 0=controlq, 1=eventq, 2=requestq */
+    /* Step 7: VirtQueue Setup — 3 queues: 0=controlq, 1=eventq, 2=requestq */
     for (uint16 q = 0; q <= 2; q++) {
         /* Select the queue */
         pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_SEL, q);

@@ -10,9 +10,6 @@ BPTR _manager_Close(struct DeviceManagerInterface *Self, struct IOStdReq *ioreq)
     struct VirtIOUSCSIDevUnit *unit = (struct VirtIOUSCSIDevUnit *)ioreq->io_Unit;
     BPTR seglist = (BPTR)NULL;
 
-    // In a fixed-media driver, we keep the unit structure even if no one is using it
-    // This avoids race conditions during Workbench right-clicks
-    // Note: unit pointer is already valid from ioreq->io_Unit
     DPRINTF(devBase->IExec, "[virtioscsi:Close.c] Close called for unit ptr %p, open_count %ld\n", unit,
             unit->open_count);
 

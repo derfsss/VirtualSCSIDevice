@@ -40,13 +40,11 @@ void Parse_SCSI_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 
     struct SCSICmd *scsiCmd = (struct SCSICmd *)req->io_Data;
 
-    // Check minimum command length
     if (!scsiCmd->scsi_Command || scsiCmd->scsi_CmdLength == 0) {
         req->io_Error = HFERR_BadStatus;
         return;
     }
 
-    // Default to GOOD status
     scsiCmd->scsi_Status = 0;
     scsiCmd->scsi_CmdActual = scsiCmd->scsi_CmdLength;
     scsiCmd->scsi_SenseActual = 0;
@@ -56,40 +54,40 @@ void Parse_SCSI_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     DPRINTF(libBase->IExec, "[virtioscsi:scsi_parse.c] SCSI Command parsed: opcode 0x%02lX\n", (uint32)opcode);
 
     switch (opcode) {
-    case 0x12: // INQUIRY
-        Handle_SCSI_Inquiry(libBase, req, scsiCmd);
-        break;
-
-    case 0x25: // READ CAPACITY (10)
-        Handle_SCSI_ReadCapacity10(libBase, req, scsiCmd);
-        break;
-
-    case 0x28: // READ (10)
-        Handle_SCSI_Read10(libBase, req, scsiCmd);
-        break;
-
-    case 0x2A: // WRITE (10)
-        Handle_SCSI_Write10(libBase, req, scsiCmd);
-        break;
-
-    case 0x00: // TEST UNIT READY
+    case 0x00: /* TEST UNIT READY */
         Handle_SCSI_TestUnitReady(libBase, req, scsiCmd);
         break;
 
-    case SCSI_LOG_SENSE: // LOG SENSE (0x4D)
+    case 0x12: /* INQUIRY */
+        Handle_SCSI_Inquiry(libBase, req, scsiCmd);
+        break;
+
+    case 0x25: /* READ CAPACITY (10) */
+        Handle_SCSI_ReadCapacity10(libBase, req, scsiCmd);
+        break;
+
+    case 0x28: /* READ (10) */
+        Handle_SCSI_Read10(libBase, req, scsiCmd);
+        break;
+
+    case 0x2A: /* WRITE (10) */
+        Handle_SCSI_Write10(libBase, req, scsiCmd);
+        break;
+
+    case SCSI_LOG_SENSE: /* LOG SENSE (0x4D) — S.M.A.R.T. */
         Handle_SCSI_LogSense(libBase, req, scsiCmd);
         break;
 
-    case 0x85: // ATA PASS-THROUGH (16) — SAT layer, used by SMART tools
-    case 0xA1: // ATA PASS-THROUGH (12) — older driver fallback
+    case 0x85: /* ATA PASS-THROUGH (16) — SAT, used by SMART tools */
+    case 0xA1: /* ATA PASS-THROUGH (12) — older tool fallback */
         Handle_SCSI_ATAPassthrough(libBase, req, scsiCmd);
         break;
 
     default:
-        // Unsupported SCSI opcode — CHECK CONDITION with sense data
+        /* Unsupported opcode — CHECK CONDITION / INVALID COMMAND OPERATION CODE */
         DPRINTF(libBase->IExec, "[virtioscsi:scsi_parse.c] SCSI unsupported opcode 0x%02lX\n", (uint32)opcode);
-        scsiCmd->scsi_Status = 2;                            // CHECK CONDITION
-        FillAutoSense(scsiCmd, ILLEGAL_REQUEST, 0x20, 0x00); /* INVALID COMMAND OPERATION CODE */
+        scsiCmd->scsi_Status = 2; /* CHECK CONDITION */
+        FillAutoSense(scsiCmd, ILLEGAL_REQUEST, 0x20, 0x00); /* ASC 0x20: INVALID COMMAND OPERATION CODE */
         req->io_Error = HFERR_BadStatus;
         break;
     }

@@ -572,8 +572,9 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
  *
  * All other commands (geometry, SCSI pass-through, no-ops) complete
  * synchronously and are replied to immediately by this function.
+ *
+ * Returns TRUE if VirtIOSCSI_Submit() succeeded; caller must then kick.
  * ---------------------------------------------------------------------- */
-/* Returns TRUE if a VirtIOSCSI_Submit() succeeded (caller must kick). */
 static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                                struct VirtIOUSCSIDevUnit *unit,
                                struct IOStdReq *ioreq)

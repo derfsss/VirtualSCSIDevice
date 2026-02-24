@@ -750,10 +750,10 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
     }
     IExec->ReleaseSemaphore(&libBase->io_lock);
 
+    /* Kick deferred to caller — one VirtIOSCSI_Kick() covers the whole batch */
     DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: slot=%ld queued avail_idx=%u cmd=0x%02X len=%lu\n",
             (long)slot, (unsigned)vq->avail->idx, (uint32)cdb[0], data_len);
     return 0;
-    /* NOTE: caller must call VirtIOSCSI_Kick() after submitting the batch. */
 }
 
 /*

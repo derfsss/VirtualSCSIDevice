@@ -6,7 +6,6 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     struct ExecIFace *IExec = libBase->IExec;
     struct PCIIFace *IPCI = libBase->IPCI;
     struct PCIDevice *device = NULL;
-    BOOL found = FALSE;
 
     if (!IPCI) {
         DPRINTF(IExec, "[virtioscsi] PCI_Discovery: IPCI interface not available.\n");
@@ -15,7 +14,7 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
 
     DPRINTF(IExec, "[virtioscsi] PCI_Discovery: Scanning for VirtIO SCSI controller (0x1AF4/0x1004)...\n");
 
-    /* Directly search for the VirtIO SCSI controller utilizing the TagList */
+    /* Search for the VirtIO SCSI controller by PCI vendor:device ID */
     device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1004, TAG_DONE);
 
     if (!device) {
@@ -23,7 +22,7 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         return FALSE;
     }
 
-    /* Verify Vendor and Device IDs (optional since FindDeviceTags filtered it, but good for logs) */
+    /* Read back IDs for the log (FindDeviceTags already matched them) */
     uint16 vendor = device->ReadConfigWord(PCI_VENDOR_ID);
     uint16 devid = device->ReadConfigWord(PCI_DEVICE_ID);
 
@@ -49,10 +48,10 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
                 libBase->bar4->Physical, libBase->bar4->Size);
     }
 
-    found = TRUE;
-    /* We intentionally leave the device handle active in libBase->pciDevice.
-       We do NOT call IPCI->FreeDevice(device) here because we need the BARs to remain
-       active during the device driver's lifetime. It is freed in _manager_Expunge. */
-
-    return found;
+    /*
+     * Keep the device handle live in libBase->pciDevice — do NOT call
+     * IPCI->FreeDevice() here. BAR mappings must remain valid for the
+     * driver's lifetime; they are released in _manager_Expunge().
+     */
+    return TRUE;
 }

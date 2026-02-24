@@ -67,17 +67,25 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         IExec->ReplyMsg((struct Message *)ioreq);
         return;
 
-    /* === Quiet No-ops (handled inline — no unit task needed) === */
+    /*
+     * === Simple Commands (handled inline — no unit task needed) ===
+     *
+     * VirtIO SCSI disks are fixed media: always present, never spinning down.
+     * These commands require no hardware interaction and are replied to here.
+     */
+
+    /* Motor control: report motor was already on (io_Actual = 1) */
     case CMD_STOP:
     case CMD_START:
     case TD_MOTOR:
-        ioreq->io_Actual = 1; /* motor was already on */
+        ioreq->io_Actual = 1;
         ioreq->io_Error = 0;
         if (ioreq->io_Flags & IOF_QUICK)
             return;
         IExec->ReplyMsg((struct Message *)ioreq);
         return;
 
+    /* Position / flush no-ops for fixed media */
     case TD_SEEK:
     case TD_EJECT:
     case TD_SEEK64:
@@ -92,7 +100,7 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     case TD_CHANGENUM:
-        ioreq->io_Actual = 0; /* disk never changed (fixed media) */
+        ioreq->io_Actual = 0; /* change count: 0 = disk never changed */
         ioreq->io_Error = 0;
         if (ioreq->io_Flags & IOF_QUICK)
             return;
@@ -100,9 +108,15 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     case TD_CHANGESTATE:
+        ioreq->io_Actual = 0; /* 0 = disk present */
+        ioreq->io_Error = 0;
+        if (ioreq->io_Flags & IOF_QUICK)
+            return;
+        IExec->ReplyMsg((struct Message *)ioreq);
+        return;
+
     case TD_PROTSTATUS:
-        /* These return immediately with a fixed value */
-        ioreq->io_Actual = 0;
+        ioreq->io_Actual = 0; /* 0 = not write-protected */
         ioreq->io_Error = 0;
         if (ioreq->io_Flags & IOF_QUICK)
             return;
@@ -110,8 +124,14 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     case TD_GETDRIVETYPE:
+        ioreq->io_Actual = DRIVE_NEWSTYLE; /* 0x44: 64-bit addressing + NSD support */
+        ioreq->io_Error = 0;
+        if (ioreq->io_Flags & IOF_QUICK)
+            return;
+        IExec->ReplyMsg((struct Message *)ioreq);
+        return;
+
     case TD_GETNUMTRACKS:
-        /* Inline fixed-value responses */
         ioreq->io_Actual = 0;
         ioreq->io_Error = 0;
         if (ioreq->io_Flags & IOF_QUICK)
@@ -120,7 +140,6 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     case NSCMD_DEVICEQUERY:
-        /* NSCMD_DEVICEQUERY is quick and stateless */
         Parse_NS_Command(libBase, ioreq);
         if (ioreq->io_Flags & IOF_QUICK)
             return;
