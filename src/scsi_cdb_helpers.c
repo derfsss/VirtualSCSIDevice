@@ -72,8 +72,13 @@ void make_write16_cdb(uint8 *cdb, uint64 lba, uint32 blocks)
 
 int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevUnit *unit)
 {
-    if (!unit || unit->geometry_valid)
+    if (!unit || unit->geometry_valid) {
+        DPRINTF(base->IExec, "[virtioscsi:scsi_cdb_helpers.c] ensure_geometry_cached: unit=%p valid=%d (skip)\n",
+                (void *)unit, unit ? (int)unit->geometry_valid : -1);
         return 0;
+    }
+    DPRINTF(base->IExec, "[virtioscsi:scsi_cdb_helpers.c] ensure_geometry_cached: issuing READ CAPACITY T%lu L%lu\n",
+            unit->target_id, unit->lun_id);
 
     uint8 cap_data[8] = {0};
     uint8 cdb[10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0}; /* READ CAPACITY(10) */

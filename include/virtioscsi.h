@@ -97,12 +97,35 @@ struct VirtIOUSCSIDevUnit
     uint32                       dma_resp_entries;  /* Entry count from StartDMA */
 
     /*
+     * DoIO cookie handoff: when Harvest dequeues a cookie that matches no
+     * inflight pipeline slot, it may belong to a concurrent DoIO call on
+     * another unit that hasn't yet reached its GetBuf drain loop.
+     *
+     * Instead of discarding the cookie (which would cause DoIO to time out),
+     * Harvest stores it here and signals io_wait_task.  DoIO's drain loop
+     * checks this field (under io_lock) before calling GetBuf.
+     *
+     * Written by Harvest (holding io_lock), read+cleared by DoIO drain loop
+     * (holding io_lock). Initialised to NULL.
+     */
+    void   *doio_pending_cookie;  /* stashed cookie for DoIO pickup */
+    uint32  doio_pending_written; /* bytes written for the stashed cookie */
+
+    /*
      * Pipeline inflight table (Phase 7): allows multiple block I/O requests
      * to be submitted to VirtIO without waiting for each to complete.
      * Slot 0 is also used by the synchronous path to avoid double-allocation.
      * ioreq == NULL means the slot is free.
      */
 #define MAX_INFLIGHT 8
+
+/*
+     * Bounce buffer size threshold.  Transfers at or below this size use a
+     * pre-pinned MEMF_SHARED bounce buffer instead of per-call StartDMA/EndDMA.
+     * 4096 covers all 512-byte and 4KB block-size metadata I/O with zero DMA
+     * setup overhead.  Larger transfers use direct user-buffer DMA as before.
+     */
+#define BOUNCE_BUF_SIZE 4096
 
     struct {
         struct IOStdReq *ioreq;    /* NULL = slot free */
@@ -115,6 +138,9 @@ struct VirtIOUSCSIDevUnit
         uint32           dma_num_entries;
         /* Which pre-alloc slot's req_buf/resp_buf this uses */
         uint32           buf_slot;
+        /* Bounce-buffer path: set when data_len <= BOUNCE_BUF_SIZE */
+        BOOL             using_bounce; /* TRUE = bounce_bufs[slot] used */
+        BOOL             is_write;     /* TRUE = write, FALSE = read (for read-back) */
         /* Decoded result for ReplyMsg (set by Harvest, read nowhere — ReplyMsg done inline) */
         uint8            scsi_status;
         uint32           residual;
@@ -128,6 +154,17 @@ struct VirtIOUSCSIDevUnit
     uint32                       dma_req_entries_arr[MAX_INFLIGHT];
     struct DMAEntry             *dma_resp_lists[MAX_INFLIGHT];
     uint32                       dma_resp_entries_arr[MAX_INFLIGHT];
+
+    /*
+     * Per-slot bounce buffers (BOUNCE_BUF_SIZE bytes each, MEMF_SHARED).
+     * Permanently DMA-mapped so transfers <= BOUNCE_BUF_SIZE incur zero
+     * per-call StartDMA/EndDMA overhead.  Write path: copy user→bounce before
+     * Submit.  Read path: copy bounce→user in Harvest before ReplyMsg.
+     * bounce_dma_phys[s] is the single physical address (contiguous alloc).
+     */
+    uint8   *bounce_bufs[MAX_INFLIGHT];          /* virtual address of bounce buffer */
+    uint32   bounce_dma_phys[MAX_INFLIGHT];      /* physical address for SG entry */
+    uint32   bounce_dma_entries[MAX_INFLIGHT];   /* StartDMA entry count (kept for EndDMA) */
 };
 
 /* Prototypes for _man functions */

@@ -264,33 +264,29 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
  * to notify if avail->idx has reached or crossed that threshold, avoiding
  * unnecessary PCI writes under sustained load.
  */
-void VirtQueue_Kick(struct virtqueue *vq, struct PCIDevice *pciDev, uint32 iobase)
+void VirtQueue_Kick(struct ExecIFace *IExec, struct virtqueue *vq, struct PCIDevice *pciDev, uint32 iobase)
 {
     /* Memory barrier: ensure avail->idx write is visible before the notify */
     __asm__ volatile("sync" ::: "memory");
 
-    if (vq->use_event_idx) {
-        /*
-         * avail_event is stored by the device at the end of the used ring:
-         *   used->ring[num] (first word past the last used_elem)
-         * Cast: vring_used has a flexible ring[], so index past num entries.
-         */
-        uint16 avail_event = vq->used->ring[vq->num].id; /* id field = low 16 bits */
-        uint16 new_idx     = vq->avail->idx;
-        uint16 old_idx     = vq->last_kick_avail_idx;
-
-        /*
-         * Notify if new_idx wrapped around avail_event since last kick.
-         * Condition: (new_idx - avail_event - 1) < (new_idx - old_idx)
-         * (unsigned 16-bit arithmetic handles wraparound correctly)
-         */
-        if ((uint16)(new_idx - avail_event - 1) < (uint16)(new_idx - old_idx)) {
-            vq->last_kick_avail_idx = new_idx;
-            pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY, (uint16)vq->index);
-        }
-    } else {
-        pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY, (uint16)vq->index);
-    }
+    /*
+     * Always notify the device unconditionally.
+     *
+     * VIRTIO_F_EVENT_IDX has two halves:
+     *   - Driver kick suppression: device writes avail_event into used->ring[num].
+     *     Driver only kicks when avail->idx crosses avail_event.
+     *   - Interrupt suppression: driver writes used_event into avail->ring[num].
+     *     Device only interrupts when used->idx crosses used_event.
+     *
+     * In practice QEMU legacy mode does NOT update avail_event (stays 0 forever),
+     * so the kick-suppression check always evaluates FALSE after the first kick,
+     * silently starving the device of notifications.  We accept EVENT_IDX to
+     * enable the interrupt-suppression half (used_event, written in GetBuf) but
+     * skip the kick-suppression half and always send QUEUE_NOTIFY.
+     */
+    DPRINTF(IExec, "[virtioscsi:virtqueue.c] Kick VQ%lu: notify (avail_idx=%u)\n",
+            vq->index, (unsigned)vq->avail->idx);
+    pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY, (uint16)vq->index);
 }
 
 /*
@@ -365,6 +361,31 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
     vq->num_free += (uint16)freed;
 
     vq->last_used_idx++;
+
+    /*
+     * EVENT_IDX: write used_event = last_used_idx to request an interrupt on
+     * the very next completion.  This is the correct baseline for:
+     *   - The polling path (discovery, before unit tasks exist): GetBuf is
+     *     called N times while used_event would otherwise stay at 0.  If
+     *     last_used_idx drifts ahead of used_event, QEMU's check
+     *       (used->idx - used_event - 1) < (used->idx - old_used)
+     *     evaluates FALSE and the device never fires an interrupt when the
+     *     IRQ path takes over — drives fail to mount.
+     *   - Single-request or low-inflight workloads: fire immediately.
+     *
+     * VirtIOSCSI_Harvest() overrides this with last_used_idx + (occupied-1)
+     * when occupied >= 2 (pipeline coalescing).  For occupied <= 1 the
+     * baseline written here is already optimal.
+     *
+     * Spec formula: device interrupts when
+     *   (new_used - used_event - 1) < (new_used - old_used)
+     * With used_event = last_used_idx and new_used = last_used_idx + 1:
+     *   (last+1 - last - 1) < (last+1 - last)  →  0 < 1  →  TRUE ✓
+     */
+    if (vq->use_event_idx) {
+        vq->avail->ring[vq->num] = vq->last_used_idx;
+        __asm__ volatile("eieio" ::: "memory");
+    }
 
     return cookie;
 }

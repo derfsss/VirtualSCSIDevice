@@ -130,7 +130,7 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
  * Notify the device that new buffers are available.
  * Writes the queue index to VIRTIO_PCI_QUEUE_NOTIFY via PCI I/O.
  */
-void VirtQueue_Kick(struct virtqueue *vq, struct PCIDevice *pciDev, uint32 iobase);
+void VirtQueue_Kick(struct ExecIFace *IExec, struct virtqueue *vq, struct PCIDevice *pciDev, uint32 iobase);
 
 /*
  * Check for completed buffers in the used ring.

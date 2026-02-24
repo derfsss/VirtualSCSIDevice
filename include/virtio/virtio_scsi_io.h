@@ -26,19 +26,30 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
 /*
  * Submit a block I/O request into a pipeline inflight slot (non-blocking).
  * Finds a free inflight slot, DMA-maps the user buffer, builds the descriptor
- * chain, calls AddBuf+Kick, and returns immediately. The slot is marked
- * occupied; VirtIOSCSI_Harvest() will ReplyMsg when the device completes it.
+ * chain, calls AddBuf, and returns immediately WITHOUT kicking the device.
+ * The slot is marked occupied; VirtIOSCSI_Harvest() will ReplyMsg when done.
+ *
+ * The caller MUST call VirtIOSCSI_Kick() after submitting one or more requests
+ * to notify the device. Batching multiple Submit() calls before a single Kick()
+ * eliminates redundant PCI writes for burst I/O workloads.
  *
  * The ioreq must have io_Unit, io_Data, io_Length, io_Offset set.
  * is_write: TRUE = CMD_WRITE path, FALSE = CMD_READ path.
  * cdb/cdb_len: the SCSI CDB to send.
  *
- * Returns 0 on success (slot acquired and submitted), -1 if no free slot
- * (caller should queue the ioreq for retry), or a positive error code on
- * hard failure (DMA setup, AddBuf failure — set io_Error and ReplyMsg).
+ * Returns 0 on success (slot acquired, AddBuf done, kick pending), -1 if no
+ * free slot (caller should queue the ioreq for retry), or a positive error
+ * code on hard failure (DMA setup, AddBuf failure — set io_Error and ReplyMsg).
  */
 int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *unit,
                         struct IOStdReq *ioreq, uint8 *cdb, uint32 cdb_len, BOOL is_write);
+
+/*
+ * Notify the VirtIO device that new requests are available in the ring.
+ * Call once after one or more VirtIOSCSI_Submit() calls to flush the batch.
+ * Acquires io_lock for the sync barrier + PCI write, then releases it.
+ */
+void VirtIOSCSI_Kick(struct VirtIOSCSIBase *libBase);
 
 /*
  * Harvest completed VirtIO responses from the used ring.

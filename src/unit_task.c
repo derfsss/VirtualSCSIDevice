@@ -7,8 +7,9 @@
 #include <exec/exectags.h>
 #include <exec/memory.h>
 
-/* Forward declaration — dispatch is defined below */
-static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
+/* Forward declaration — dispatch is defined below.
+ * Returns TRUE if at least one VirtIOSCSI_Submit() succeeded (kick pending). */
+static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                                struct VirtIOUSCSIDevUnit *unit,
                                struct IOStdReq *ioreq);
 
@@ -113,6 +114,73 @@ static void free_one_slot(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *un
     if (unit->req_bufs[s])  { IExec->FreeVec(unit->req_bufs[s]);  unit->req_bufs[s]  = NULL; }
 }
 
+/* -------------------------------------------------------------------------
+ * Bounce buffer helpers
+ *
+ * One BOUNCE_BUF_SIZE MEMF_SHARED buffer is pre-allocated per inflight slot
+ * and kept permanently DMA-mapped.  Submit uses it for transfers that fit
+ * (data_len <= BOUNCE_BUF_SIZE), avoiding per-call StartDMA/EndDMA entirely.
+ *
+ * The buffer is a single contiguous page-aligned allocation so StartDMA
+ * always returns exactly one DMA entry.  We store the physical address and
+ * entry count; the DMAEntry list itself is freed immediately after GetDMAList
+ * since we only need the physical address for the SG entry.
+ * ---------------------------------------------------------------------- */
+static BOOL alloc_one_bounce(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit, uint32 s)
+{
+    unit->bounce_bufs[s] = (uint8 *)IExec->AllocVecTags(BOUNCE_BUF_SIZE,
+                                                          AVT_ClearWithValue, 0,
+                                                          AVT_Type, MEMF_SHARED,
+                                                          TAG_DONE);
+    if (!unit->bounce_bufs[s])
+        return FALSE;
+
+    /*
+     * DMA_ReadFromRAM | ~DMA_ReadFromRAM: we need the bounce buffer
+     * accessible in both directions (write: OUT to device; read: IN from
+     * device).  Use DMA_ReadFromRAM for the StartDMA — AmigaOS uses the
+     * flags only to determine cache coherency direction; MEMF_SHARED is
+     * already non-cacheable so both directions work with either flag.
+     * Store the physical base; the DMAEntry list is freed immediately.
+     */
+    uint32 entries = IExec->StartDMA(unit->bounce_bufs[s], BOUNCE_BUF_SIZE, DMA_ReadFromRAM);
+    if (entries == 0) {
+        IExec->FreeVec(unit->bounce_bufs[s]);
+        unit->bounce_bufs[s] = NULL;
+        return FALSE;
+    }
+    unit->bounce_dma_entries[s] = entries;
+
+    struct DMAEntry *tmp = (struct DMAEntry *)IExec->AllocSysObjectTags(
+        ASOT_DMAENTRY, ASODMAE_NumEntries, entries, TAG_DONE);
+    if (!tmp) {
+        IExec->EndDMA(unit->bounce_bufs[s], BOUNCE_BUF_SIZE, DMA_ReadFromRAM | DMAF_NoModify);
+        unit->bounce_dma_entries[s] = 0;
+        IExec->FreeVec(unit->bounce_bufs[s]);
+        unit->bounce_bufs[s] = NULL;
+        return FALSE;
+    }
+    IExec->GetDMAList(unit->bounce_bufs[s], BOUNCE_BUF_SIZE, DMA_ReadFromRAM, tmp);
+    unit->bounce_dma_phys[s] = (uint32)tmp[0].PhysicalAddress;
+    IExec->FreeSysObject(ASOT_DMAENTRY, tmp);
+    /* DMA mapping stays live — EndDMA called in free_one_bounce */
+    return TRUE;
+}
+
+static void free_one_bounce(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit, uint32 s)
+{
+    if (unit->bounce_dma_entries[s] > 0 && unit->bounce_bufs[s]) {
+        IExec->EndDMA(unit->bounce_bufs[s], BOUNCE_BUF_SIZE,
+                      DMA_ReadFromRAM | DMAF_NoModify);
+        unit->bounce_dma_entries[s] = 0;
+        unit->bounce_dma_phys[s]    = 0;
+    }
+    if (unit->bounce_bufs[s]) {
+        IExec->FreeVec(unit->bounce_bufs[s]);
+        unit->bounce_bufs[s] = NULL;
+    }
+}
+
 static BOOL preallocate_unit_dma(struct VirtIOSCSIBase *libBase,
                                   struct VirtIOUSCSIDevUnit *unit)
 {
@@ -124,8 +192,20 @@ static BOOL preallocate_unit_dma(struct VirtIOSCSIBase *libBase,
             DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: slot %lu alloc failed\n", s);
             /* Free already-allocated slots */
             uint32 k;
-            for (k = 0; k < s; k++)
+            for (k = 0; k < s; k++) {
+                free_one_bounce(IExec, unit, k);
                 free_one_slot(IExec, unit, k);
+            }
+            return FALSE;
+        }
+        if (!alloc_one_bounce(IExec, unit, s)) {
+            DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: bounce slot %lu alloc failed\n", s);
+            free_one_slot(IExec, unit, s);
+            uint32 k;
+            for (k = 0; k < s; k++) {
+                free_one_bounce(IExec, unit, k);
+                free_one_slot(IExec, unit, k);
+            }
             return FALSE;
         }
     }
@@ -149,8 +229,10 @@ static void free_unit_dma(struct VirtIOSCSIBase *libBase,
     struct ExecIFace *IExec = libBase->IExec;
     uint32 s;
 
-    for (s = 0; s < MAX_INFLIGHT; s++)
+    for (s = 0; s < MAX_INFLIGHT; s++) {
+        free_one_bounce(IExec, unit, s);
         free_one_slot(IExec, unit, s);
+    }
 
     /* Clear the slot-0 aliases */
     unit->req_buf          = NULL;
@@ -234,15 +316,29 @@ void UnitTask_Entry(void)
         if (sigs & unit->io_signal_mask)
             VirtIOSCSI_Harvest(libBase, unit);
 
-        /* Dispatch new requests from the port */
+        /* Dispatch new requests from the port.
+         *
+         * Deferred-kick optimisation: drain the entire message queue before
+         * notifying the device.  Each VirtIOSCSI_Submit() call does AddBuf
+         * (updates avail->idx) but intentionally skips the PCI QUEUE_NOTIFY
+         * write.  After all pending messages are dispatched, a single
+         * VirtIOSCSI_Kick() flushes the whole batch with one PCI write.
+         *
+         * For a burst of N queued requests this reduces PCI writes from N to 1.
+         * Synchronous commands (geometry, HD_SCSICMD) that call VirtIOSCSI_DoIO
+         * issue their own unconditional QUEUE_NOTIFY internally, so they are
+         * unaffected by whether we kick at the end of the loop.
+         */
         if (sigs & unit->io_port_mask) {
             struct IOStdReq *ioreq;
+            BOOL need_kick = FALSE;
             while ((ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port)) != NULL) {
-                UnitTask_Dispatch(libBase, unit, ioreq);
-                /* NOTE: UnitTask_Dispatch replies synchronous commands (HD_SCSICMD etc.)
-                 * itself. Pipeline block I/O commands mark ioreq in an inflight slot and
-                 * return WITHOUT replying — Harvest will ReplyMsg when VirtIO completes. */
+                if (UnitTask_Dispatch(libBase, unit, ioreq))
+                    need_kick = TRUE;
             }
+            /* One kick covers all Submit()s in this batch. */
+            if (need_kick)
+                VirtIOSCSI_Kick(libBase);
         }
     }
 
@@ -477,7 +573,8 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
  * All other commands (geometry, SCSI pass-through, no-ops) complete
  * synchronously and are replied to immediately by this function.
  * ---------------------------------------------------------------------- */
-static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
+/* Returns TRUE if a VirtIOSCSI_Submit() succeeded (caller must kick). */
+static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                                struct VirtIOUSCSIDevUnit *unit,
                                struct IOStdReq *ioreq)
 {
@@ -562,4 +659,6 @@ static void UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
     /* For synchronous commands (not submitted asynchronously), reply now */
     if (!submitted)
         IExec->ReplyMsg((struct Message *)ioreq);
+
+    return submitted; /* TRUE = AddBuf done, caller must VirtIOSCSI_Kick() */
 }

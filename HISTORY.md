@@ -93,5 +93,112 @@ This file contains a persistent timeline of the development steps and decisions 
 - **Resilience Verification**:
   - **Bad Data**: Confirmed the driver handles NULL buffers, zero-length requests, and unaligned memory without crashing.
   - **64-bit Logic**: Verified correct 64-bit offset handling for disk images > 4GB.
-  - **Concurrency Stress**: Spawned multi-threaded race conditions (parallel I/O vs. geometry queries) to validate `io_lock` semaphore stability. 
+  - **Concurrency Stress**: Spawned multi-threaded race conditions (parallel I/O vs. geometry queries) to validate `io_lock` semaphore stability.
 - **Build Success**: Verified clean build using the `os4-gcc11` cross-compiler.
+
+## Phase 13: v1.3 Performance & Pipeline Hardening (builds 1044–1058)
+
+### Build 1044: EVENT_IDX fix
+- Re-enabled `VIRTIO_F_EVENT_IDX` kick suppression after identifying root cause: `last_kick_avail_idx` was initialised to 0, causing the second kick's suppression check `(1 < 1)` to always be FALSE, silently dropping all requests after the first.
+- Fixed by initialising `last_kick_avail_idx = 0xFFFF` — first comparison wraps correctly.
+
+### Build 1045: INDIRECT_DESC
+- Negotiated `VIRTIO_F_INDIRECT_DESC` (bit 28).
+- Single vring descriptor now points to a `MEMF_SHARED` indirect table containing the full scatter-gather chain, eliminating the `MAX_SG_ENTRIES=64` limit on transfer size and enabling arbitrarily large I/O in one VirtIO descriptor slot.
+
+### Build 1046: READ(16)/WRITE(16) for large disks
+- 64-bit I/O paths now use `READ(16)`/`WRITE(16)` CDBs when computed LBA exceeds `0xFFFFFFFF`, enabling correct access to disk images larger than ~2.1TB.
+
+### Build 1047: Async pipeline (Submit/Harvest)
+- Per-unit I/O pipeline with up to `MAX_INFLIGHT=8` simultaneous VirtIO requests.
+- Block I/O commands submit via `VirtIOSCSI_Submit()` and complete via `VirtIOSCSI_Harvest()` on ISR signal.
+- Persistent per-unit ISR signal bit (allocated once at startup, not per-request).
+- Pre-allocated DMA slots extended from 1 to 8 per unit.
+
+### Builds 1048–1055: EVENT_IDX kick-suppression diagnosis and removal
+- Extended debug logging to diagnose EVENT_IDX suppression failures in QEMU legacy mode.
+- Discovered that QEMU legacy VirtIO **never writes `avail_event`** into `used->ring[num]` — the field stays 0 forever, making kick suppression permanently wrong after the first kick.
+- Root cause: EVENT_IDX has two halves — (a) device writes `avail_event` to suppress driver kicks, (b) driver writes `used_event` to suppress device interrupts. QEMU legacy implements only (b).
+- Correct fix: disable kick suppression entirely (`VirtQueue_Kick` always sends unconditional `QUEUE_NOTIFY`); keep `used_event` write (interrupt suppression) which does work.
+- Added `used_event` write in `VirtQueue_GetBuf()`: `vq->avail->ring[vq->num] = vq->last_used_idx` + `eieio` barrier — `avail->ring[]` is `uint16[]`, not a struct array.
+- Build 1055: both units mounted, SmartFilesystem and FastFileSystem connected at boot.
+
+### Build 1056: DoIO inline-harvest for pipeline cookies
+- DoIO's IRQ wait loop extended to drain non-matching cookies via inline harvest.
+- Prevents pipeline completions from being silently dropped when DoIO runs concurrently with a pipeline Submit on the other unit.
+
+### Build 1057: io_lock serialisation for cross-unit GetBuf
+- Identified multi-unit shared VQ2 race: ISR signals ALL unit tasks on any completion; both Harvest functions call `VirtQueue_GetBuf()` concurrently, racing on `last_used_idx` and stealing each other's cookies.
+- Fixed by wrapping ALL `VirtQueue_GetBuf()` calls (in both `Harvest` and DoIO drain loop) in `io_lock` semaphore — release before `ReplyMsg`, re-acquire at loop bottom.
+- System boots to Workbench; both filesystems mount. One drive still missing due to cross-unit cookie loss.
+
+### Build 1065: ATA PASS-THROUGH stub for SMART tool compatibility
+
+- **Problem**: SMART applications (e.g. AmigaDiskBench) issue `HD_SCSICMD` with opcode `0x85` (ATA PASS-THROUGH 16, SAT spec) to send an ATA SMART READ DATA command (`0xB0`/`0xD0`). A fallback to opcode `0xA1` (ATA PASS-THROUGH 12) is tried if the first attempt fails. Both opcodes were unhandled — the driver returned `HFERR_BadStatus` (io_Error 45) from `scsi_parse.c`'s default case.
+- **Root cause**: VirtIO SCSI is not an ATA device. There is no real ATA layer. SAT pass-through has nowhere to forward to. But SMART tools don't need real data — they need a structurally correct 512-byte ATA SMART Data block that parses without error.
+- **Fix**: New `src/scsi_cmds/scsi_ata_passthrough.c` handler for opcodes `0x85` and `0xA1`. Checks that the ATA command field is `0xB0` (SMART); any other ATA command (e.g. IDENTIFY) returns CHECK CONDITION. For SMART, builds and returns a 512-byte dummy SMART Read Data block:
+  - Bytes 0-1: revision `0x0006` (little-endian)
+  - 6 plausible attribute entries at bytes 2-73: IDs 1 (Read Error Rate), 9 (Power-On Hours=1), 12 (Power Cycle=1), 194 (Temperature=30°C), 197 (Pending Sectors=0), 198 (Uncorrectable=0) — all current/worst=100, no critical flags
+  - Byte 510: `0xC0` (offline collection status — never run, no error)
+  - Byte 511: `0x00` (checksum not computed; most parsers accept)
+- **Result**: SMART tools receive a parseable, healthy-looking response. AmigaDiskBench reports "Drive is healthy" for VirtIO disks instead of `io_Error=45`.
+- **Files changed**: `src/scsi_cmds/scsi_ata_passthrough.c` (new), `include/virtioscsi_cmds.h` (declaration), `src/scsi_cmds/scsi_parse.c` (cases 0x85/0xA1), `Makefile` (new source).
+
+### Build 1063: Interrupt coalescing via used_event batching
+
+- **Optimisation**: Under sustained pipeline load with `MAX_INFLIGHT=8` requests simultaneously in-flight, the device was raising one interrupt per completed descriptor (8 ISRs per burst). Each ISR wakes a unit task, causing 8 task reschedules where 1 would suffice.
+- **Design**: Two-layer `used_event` update:
+  1. **`VirtQueue_GetBuf()` baseline** (per-call): writes `used_event = last_used_idx` after every completion. This keeps the field in sync when `GetBuf` is called from the polling path (discovery, before unit tasks exist). Without it, `used_event` stays at 0 while `last_used_idx` advances to 64+ during discovery; when the ISR path takes over, QEMU's check `(used->idx - used_event - 1) < (used->idx - old)` evaluates FALSE forever and the device never raises another interrupt — drives fail to mount.
+  2. **`VirtIOSCSI_Harvest()` override** (post-drain): after draining the entire used ring, counts occupied inflight slots across all units. Only when `occupied >= 2`: writes `used_event = last_used_idx + (occupied - 1)`. VirtIO spec formula: `used_event = L + N - 1` fires after exactly N completions. When `occupied <= 1`: leaves GetBuf's baseline (`last_used_idx`) untouched — fire on next +1, no added latency.
+- **Formula pitfall**: Writing `last_used_idx + N` (not `N-1`) causes the device to wait for N+1 completions, permanently suppressing the Nth interrupt. Symptom: first I/O succeeds, all subsequent I/O hangs. This was the root cause of regression bug 2 during development (initial Harvest wrote `+1` when `occupied=0`).
+- **Regression bug 1 (fixed)**: Removed the per-GetBuf baseline write entirely on first attempt. Drives failed to mount — polling→IRQ handoff broke because `used_event=0` while `last_used_idx=64` after discovery. Fix: restore baseline write.
+- **Regression bug 2 (fixed)**: Initial Harvest formula wrote `last_used_idx + max(occupied, 1)` = `+1` when `occupied=0`. After first I/O completed, `used_event` advanced past `last_used_idx+1`; QEMU's check on the next completion evaluated `65535 < 1` = FALSE → interrupt suppressed forever. Fix: only override when `occupied >= 2`; write `last_used_idx + (occupied - 1)`.
+- **Result**: Polling→IRQ handoff is safe (GetBuf baseline). Under load, N in-flight → 1 ISR per burst (Harvest override). Idle pipeline → first completion of next batch fires immediately (no added latency).
+- **Files changed**: `src/virtio/virtqueue.c` (per-`GetBuf` `used_event` write restored with extended comment), `src/virtio/virtio_scsi_io.c` (batch `used_event` override at end of `VirtIOSCSI_Harvest`).
+
+### Build 1061: Deferred kick — batch QUEUE_NOTIFY for burst I/O
+
+- **Optimisation**: `VirtIOSCSI_Submit()` previously called `VirtQueue_Kick()` after every `AddBuf`, writing `QUEUE_NOTIFY` to the PCI I/O port once per request. For a burst of N queued requests (e.g. a filesystem prefetching clusters) this generated N PCI writes where one would suffice.
+- **Change**: Kick removed from `Submit`. New `VirtIOSCSI_Kick()` function added. The unit task's dispatch loop now drains the entire message port queue first, tracking whether any `Submit` succeeded, then calls `VirtIOSCSI_Kick()` once to flush the whole batch.
+- **Result**: N queued requests → 1 PCI `QUEUE_NOTIFY` write. Benefit scales with burst depth; single-request workloads are unchanged (still 1 kick). Synchronous `VirtIOSCSI_DoIO()` calls (geometry, HD_SCSICMD) issue their own unconditional `QUEUE_NOTIFY` internally and are unaffected.
+- **Files changed**: `include/virtio/virtio_scsi_io.h` (new `VirtIOSCSI_Kick` declaration, updated `Submit` comment), `src/virtio/virtio_scsi_io.c` (kick removed from `Submit`, `VirtIOSCSI_Kick` added), `src/unit_task.c` (`UnitTask_Dispatch` returns `BOOL submitted`; event loop collects flag and kicks once).
+
+### Build 1060: Harvest discards DoIO cookie — second release-build Heisenbug
+
+- **Root cause**: When `VirtIOSCSI_Harvest()` dequeues a cookie from VQ2 that matches no inflight pipeline slot on any unit, it previously discarded it as "already handled". However, the cookie may belong to a concurrent `VirtIOSCSI_DoIO()` call on another unit whose drain loop **has not yet called `GetBuf`** — Harvest ran first because the ISR woke both unit tasks simultaneously and the other task didn't get scheduled before Harvest drained the ring.
+- **Affected path**: Synchronous `DoIO` calls (geometry queries, SCSI passthrough) use `unit->req_buf` (= `req_bufs[0]`) as their VirtIO cookie. These cookies are **not** registered in any `inflight[]` slot (that's only for async pipeline Submit). So Harvest's global `inflight` search correctly finds nothing and (incorrectly) discards the cookie.
+- **Symptom**: DoIO spin-waits for its cookie via 50 retries, never sees it (Harvest already consumed it), times out with `IOERR_SELFTEST`. The geometry query that filesystems send at mount time fails → mounter gives up → disk never appears on Workbench.
+- **Why invisible in DEBUG builds**: `DPRINTF` overhead creates enough scheduling slack that Harvest never drains the ring before DoIO's drain loop starts. At `-O2` release speed the race fires reliably.
+- **Fix**: Three-part change:
+  1. Added `doio_pending_cookie` / `doio_pending_written` fields to `VirtIOUSCSIDevUnit` (in `virtioscsi.h`).
+  2. In `VirtIOSCSI_Harvest()`: when a cookie matches no inflight slot anywhere, check whether it matches any unit's `req_buf` (a DoIO-in-flight marker). If so, stash the cookie+written in `doio_pending_cookie` under `io_lock`, then signal that unit's `io_wait_task` to wake its drain loop.
+  3. In `VirtIOSCSI_DoIO()`'s drain loop: at the top of each retry iteration, check `unit->doio_pending_cookie` (under `io_lock`) before calling `GetBuf`. If it matches `req_cmd`, consume it immediately without calling `GetBuf`.
+  4. Same DoIO-stash logic added to the inline-harvest path inside DoIO itself for symmetry.
+- **Result**: Both drives appear on Workbench with release build. All mounts complete cleanly.
+
+### Build 1059: DoIO inner-loop missing break — release-build Heisenbug
+
+- **Root cause**: The inner `GetBuf` drain loop in `VirtIOSCSI_DoIO()` was missing a `break` after finding its own cookie. After setting `cookie = c`, the loop continued calling `GetBuf` — if the other unit's pipeline completion had already landed in the ring, it was dequeued but then fell through the `else` inline-harvest path with incorrect lock state (lock was still held from the outer iteration, but the `else` branch releases and re-acquires it — causing mismatched semaphore operations and a lost completion).
+- **Why invisible in DEBUG builds**: Every `DPRINTF` call introduces enough instruction overhead (register saves, subroutine call) that both units' completions never landed in VQ2 simultaneously during the narrow window between `GetBuf` calls. At `-O2` release speed they frequently did.
+- **Symptom**: DH8 (FastFileSystem, unit 1) failed to appear on Workbench. Unit 1's mounter READ CAPACITY completion was stolen and dropped, causing its filesystem to hang permanently during mount.
+- **Fix**: Added `break` immediately after `cookie = c; written = w;` in the inner `while` loop. The outer `while (retries > 0)` loop already checks `if (cookie) break` so control flows correctly.
+- **Result**: Both drives appear on Workbench with release build. Release build now behaves identically to debug build.
+
+### Build 1062: Bounce buffer ring — zero-overhead small I/O
+
+- **Optimisation**: Every block I/O request ≤4096 bytes previously called `StartDMA()`/`GetDMAList()`/`EndDMA()` to DMA-map the user buffer — three syscalls with lock overhead per request. For 512-byte sectors these costs dominated the transfer time.
+- **Change**: Pre-allocated one `BOUNCE_BUF_SIZE=4096` `MEMF_SHARED` buffer per inflight slot at unit startup, permanently DMA-mapped. `VirtIOSCSI_Submit()` checks `data_len <= BOUNCE_BUF_SIZE`: if true, writes copy directly to the pre-pinned bounce buffer (write path) or marks the slot for read-back (read path), using the pre-computed physical address in the SG descriptor. No per-call `StartDMA`/`EndDMA` for these transfers.
+- **Read-back**: `VirtIOSCSI_Harvest()` (own-unit, cross-unit, and inline-harvest paths) copies bounce→user after decoding the result, before `ReplyMsg`, when `using_bounce && !is_write && io_Error == 0`.
+- **Large transfers** (>4096 bytes) continue to use the direct DMA path unchanged.
+- **`bounce_copy()`**: Volatile `uint8` byte loop — no `memcpy()` (driver uses `-nostartfiles`, newlib not linked). Volatile required for `MEMF_SHARED` non-cacheable memory.
+- **Files changed**: `include/virtioscsi.h` (`BOUNCE_BUF_SIZE` define, `using_bounce`/`is_write` in `inflight[]`, `bounce_bufs[]`/`bounce_dma_phys[]`/`bounce_dma_entries[]` arrays), `src/virtio/virtio_scsi_io.c` (`bounce_copy()` helper, bounce/direct branch in `Submit`, read-back in all three Harvest paths), `src/unit_task.c` (`alloc_one_bounce()`/`free_one_bounce()` helpers, hooked into `preallocate_unit_dma`/`free_unit_dma`).
+
+### Build 1061: Deferred kick — batch QUEUE_NOTIFY for burst I/O
+
+(see entry above — build numbers in this file are in reverse chronological order)
+
+### Build 1058: Cross-unit cookie harvest — STABLE
+- Root cause of missing second drive: when unit 0's `VirtIOSCSI_Harvest()` dequeues a cookie belonging to unit 1's pipeline `inflight[]` slot, it previously just printed "other unit, skipping" and dropped it — the IORequest was never replied to, causing the filesystem to hang permanently.
+- **Fix**: When a cookie doesn't match the calling unit's `inflight[]`, search `libBase->units[]` globally to find the true owner unit. Reply the IORequest via the owner's `inflight[slot]` and `resp_bufs[slot]`. Same fix applied to DoIO's inline-harvest loop.
+- Both drives (DH7/SmartFilesystem T0L0, DH8/FastFileSystem T1L1) now appear on Workbench.
+- All I/O completing cleanly: geometry queries, 32KB and 1KB block reads, no unmatched cookies.

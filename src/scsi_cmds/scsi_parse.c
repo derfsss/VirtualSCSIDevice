@@ -80,6 +80,11 @@ void Parse_SCSI_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
         Handle_SCSI_LogSense(libBase, req, scsiCmd);
         break;
 
+    case 0x85: // ATA PASS-THROUGH (16) — SAT layer, used by SMART tools
+    case 0xA1: // ATA PASS-THROUGH (12) — older driver fallback
+        Handle_SCSI_ATAPassthrough(libBase, req, scsiCmd);
+        break;
+
     default:
         // Unsupported SCSI opcode — CHECK CONDITION with sense data
         DPRINTF(libBase->IExec, "[virtioscsi:scsi_parse.c] SCSI unsupported opcode 0x%02lX\n", (uint32)opcode);

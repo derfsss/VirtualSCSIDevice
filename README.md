@@ -25,6 +25,8 @@ This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the Amig
 - **4K sector support** — block size read from device via `READ CAPACITY(10)`, not hardcoded
 - **DMA scatter-gather** — uses AmigaOS 4.1 `StartDMA`/`GetDMAList`/`EndDMA` for correct VA→PA translation on the PPC MMU
 - **Pre-allocated DMA buffers** — per-unit MEMF_SHARED request/response buffers with permanent DMA mappings eliminate per-I/O allocation overhead
+- **Bounce buffer ring** — pre-pinned 4096-byte MEMF_SHARED bounce buffers per inflight slot; transfers ≤4096 bytes skip per-call `StartDMA`/`EndDMA` entirely
+- **Interrupt coalescing** — `used_event` batching reduces ISR frequency under pipeline load: N in-flight completions → 1 ISR per burst
 - **No deprecated APIs** — uses only current AmigaOS 4.1 FE SDK functions (`StartDMA` not `CachePreDMA`, etc.)
 
 ---
@@ -139,6 +141,37 @@ tests/
 ---
 
 ## Changelog
+
+### v1.3 build 1065 — 2026-02-24
+- **Compatibility**: ATA PASS-THROUGH stub (opcodes 0x85 / 0xA1) for S.M.A.R.T. tool support. SMART applications on AmigaOS 4 send ATA PASS-THROUGH commands via `HD_SCSICMD` (SAT layer) to retrieve ATA SMART data. Since VirtIO SCSI is not an ATA device, there is no real ATA layer to query — the driver now returns a synthetic 512-byte ATA SMART Read Data block with plausible health attributes (all green, temperature=30°C, power-on hours=1) instead of `HFERR_BadStatus` (io_Error 45). Handles both the 16-byte (0x85, primary) and 12-byte (0xA1, fallback for older drivers) pass-through variants.
+
+### v1.3 build 1064 — 2026-02-24
+- **Release build**: Removed `-DDEBUG` from Makefile default CFLAGS. Release is now the default; debug builds available via `make CFLAGS="... -DDEBUG"`.
+
+### v1.3 build 1063 — 2026-02-24
+- **Performance**: Interrupt coalescing via `used_event` batching. Two-layer design: `VirtQueue_GetBuf()` baseline writes `used_event = last_used_idx` on every call (keeps polling→IRQ handoff safe). `VirtIOSCSI_Harvest()` overrides with `last_used_idx + (occupied-1)` when ≥2 inflight slots are occupied, coalescing N pipeline completions into 1 ISR per burst. Under peak pipeline load (8 in-flight) this reduces ISR frequency 8× vs. the previous per-completion interrupt. Idle pipeline: baseline fires on the very next completion — no added latency.
+
+### v1.3 build 1062 — 2026-02-24
+- **Performance**: Bounce buffer ring — zero-overhead I/O for transfers ≤4096 bytes. One 4096-byte `MEMF_SHARED` buffer per inflight slot, permanently DMA-mapped at unit open. `VirtIOSCSI_Submit()` detects transfers within the bounce size and uses the pre-pinned buffer directly, eliminating `StartDMA`/`EndDMA` on every small-block read or write. Read data is copied bounce→user in `VirtIOSCSI_Harvest()` before `ReplyMsg`. Large transfers (>4096 bytes) use the direct DMA path unchanged.
+
+### v1.3 build 1061 — 2026-02-24
+- **Performance**: Deferred kick — batch `QUEUE_NOTIFY` for burst I/O. `VirtIOSCSI_Submit()` no longer calls `VirtQueue_Kick()` per request. The unit task's dispatch loop drains the entire message port queue first, then calls `VirtIOSCSI_Kick()` once. N queued requests → 1 PCI write instead of N. Single-request workloads are unchanged.
+
+### v1.3 build 1060 — 2026-02-24
+- **Bug fix (release-build Heisenbug)**: `VirtIOSCSI_Harvest()` was discarding DoIO cookies — when Harvest won the GetBuf race against a concurrent `VirtIOSCSI_DoIO()` on the other unit, the cookie appeared unmatched (DoIO cookies are not registered in `inflight[]`) and was silently dropped. DoIO then timed out after 50 retries, causing its filesystem to fail to mount. Fix: added `doio_pending_cookie`/`doio_pending_written` fields to `VirtIOUSCSIDevUnit`. Harvest identifies DoIO cookies by matching `unit->req_buf`, stashes them under `io_lock`, and signals the unit; DoIO's drain loop checks this stash first each iteration.
+
+### v1.3 build 1059 — 2026-02-23
+- **Bug fix (release-build Heisenbug)**: The inner `GetBuf` drain loop in `VirtIOSCSI_DoIO()` was missing a `break` after finding its own completion cookie. Without it, the loop continued calling `GetBuf` and could dequeue the other unit's pipeline completion — but then mishandled the lock state, silently dropping the IORequest. In debug builds this race was suppressed by the timing overhead of `DPRINTF` calls; in release builds it reliably caused the second drive (DH8/FastFileSystem) to fail to mount. Fix: add `break` immediately after `cookie = c`. Both drives now appear correctly in release builds.
+
+### v1.3 build 1058 — 2026-02-23
+- **Stability fix**: Cross-unit VirtIO completion harvest. When unit 0's `VirtIOSCSI_Harvest()` dequeues a completion cookie belonging to unit 1's pipeline `inflight[]` slot (or vice versa), it now searches `libBase->units[]` globally to find the true owner and replies the IORequest correctly. Previously these completions were silently dropped, causing one drive's filesystem to hang permanently and only one drive to appear on Workbench.
+- Both drives (SmartFilesystem DH7, FastFileSystem DH8) now appear and operate correctly on Workbench.
+
+### v1.3 build 1057 — 2026-02-23
+- **Stability fix**: Serialise all `VirtQueue_GetBuf()` calls with `io_lock`. Both unit tasks share VQ2 and the ISR wakes both on any completion. Without the lock, two concurrent `GetBuf()` calls race on `last_used_idx`, each seeing the other's cookie as unmatched and dropping the IORequest permanently. The lock is held around `GetBuf` only; released before `ReplyMsg`, re-acquired at the bottom of the loop.
+
+### v1.3 build 1055 — 2026-02-23
+- **Stability fix**: Disabled `VIRTIO_F_EVENT_IDX` kick suppression permanently. QEMU legacy VirtIO never writes `avail_event` into the used ring — the field stays 0 forever, causing all kicks after the first to be suppressed by the `(1 < 1)` condition. `VirtQueue_Kick` now always sends unconditional `QUEUE_NOTIFY`. The interrupt-suppression half of EVENT_IDX (driver writes `used_event` after each `GetBuf`) is retained and working.
 
 ### v1.3 build 1047 — 2026-02-23
 - Performance: pipelined block I/O — up to 8 simultaneous VirtIO SCSI requests per unit (`MAX_INFLIGHT=8`). Block I/O commands (CMD_READ, CMD_WRITE, TD_READ64, TD_WRITE64, NSCMD variants) are submitted asynchronously via `VirtIOSCSI_Submit()` and replied by `VirtIOSCSI_Harvest()` on ISR signal. HD_SCSICMD and geometry commands remain synchronous.

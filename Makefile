@@ -1,5 +1,5 @@
 CC = ppc-amigaos-gcc
-CFLAGS = -O2 -Wall -I./include -fno-tree-loop-distribute-patterns -DDEBUG
+CFLAGS = -O2 -Wall -I./include -fno-tree-loop-distribute-patterns
 LDFLAGS = -nostartfiles
 
 BUILD_DIR = build
@@ -15,6 +15,7 @@ SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c
       src/scsi_cmds/scsi_read_capacity_10.c src/scsi_cmds/scsi_rw_10.c \
       src/scsi_cmds/scsi_test_unit_ready.c \
       src/scsi_cmds/scsi_log_sense.c \
+      src/scsi_cmds/scsi_ata_passthrough.c \
       src/ns_cmds/ns_parse.c src/ns_cmds/ns_devicequery.c \
       src/ns_cmds/ns_td_getgeometry64.c src/ns_cmds/ns_td_io64.c \
       src/pci/pci_discovery.c src/virtio/virtio_init.c src/virtio/virtqueue.c \

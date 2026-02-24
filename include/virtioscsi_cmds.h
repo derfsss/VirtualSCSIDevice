@@ -43,6 +43,7 @@ void Handle_SCSI_Read10(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, st
 void Handle_SCSI_Write10(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, struct SCSICmd *scsiCmd);
 void Handle_SCSI_TestUnitReady(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, struct SCSICmd *scsiCmd);
 void Handle_SCSI_LogSense(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, struct SCSICmd *scsiCmd);
+void Handle_SCSI_ATAPassthrough(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, struct SCSICmd *scsiCmd);
 
 /* NS Handlers */
 void Handle_NS_DeviceQuery(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
