@@ -11,6 +11,10 @@
  * and ns_td_io64.c.
  */
 
+/* Build a SCSI READ CAPACITY (16) CDB. Caller provides a 16-byte buffer.
+ * Used when READ CAPACITY (10) returns last_lba == 0xFFFFFFFF (disk >= 2TB). */
+void make_read_capacity16_cdb(uint8 *cdb);
+
 /* Build a SCSI READ(10) CDB. Caller provides a 10-byte buffer. */
 void make_read10_cdb(uint8 *cdb, uint32 lba, uint16 blocks);
 

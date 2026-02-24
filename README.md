@@ -22,7 +22,10 @@ This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the Amig
 - **Multi-disk** — discovers up to 8 SCSI targets at boot, each announced to `mounter.library`
 - **Automounting** — all discovered partitions mount automatically without manual configuration
 - **Full trackdisk command set** — `CMD_READ`, `CMD_WRITE`, `CMD_UPDATE`, `TD_GETGEOMETRY`, `TD_FORMAT`, `TD_READ64`, `TD_WRITE64`, NSD 64-bit commands, `HD_SCSICMD`, and more
-- **4K sector support** — block size read from device via `READ CAPACITY(10)`, not hardcoded
+- **>2TB disk support** — two-step geometry discovery: READ CAPACITY (10) first; if last LBA == 0xFFFFFFFF, falls back to READ CAPACITY (16) for 64-bit block count
+- **SCSI VPD pages** — INQUIRY EVPD requests (page 0x00/0x80/0x83) answered locally with serial number and device ID
+- **Accurate SCSI error codes** — sense key decoded and mapped to specific AmigaOS io_Error codes (TDERR_WriteProt, TDERR_DiskChanged, TDERR_BadSecHdr, etc.)
+- **4K sector support** — block size read from device via READ CAPACITY, not hardcoded
 - **DMA scatter-gather** — uses AmigaOS 4.1 `StartDMA`/`GetDMAList`/`EndDMA` for correct VA→PA translation on the PPC MMU
 - **Pre-allocated DMA buffers** — per-unit MEMF_SHARED request/response buffers with permanent DMA mappings eliminate per-I/O allocation overhead
 - **Bounce buffer ring** — pre-pinned 4096-byte MEMF_SHARED bounce buffers per inflight slot; transfers ≤4096 bytes skip per-call `StartDMA`/`EndDMA` entirely
@@ -141,6 +144,20 @@ tests/
 ---
 
 ## Changelog
+
+### v1.4 build 1070 — 2026-02-24
+- **Performance**: `MAX_INFLIGHT` increased from 8 to 16. Each unit task can now sustain 16 simultaneous in-flight block I/O requests, doubling the pipeline depth and improving sequential throughput under burst loads.
+
+### v1.4 build 1069 — 2026-02-24
+- **Compatibility**: SCSI INQUIRY VPD pages implemented. EVPD requests for page 0x00 (Supported Pages), 0x80 (Unit Serial Number — `"VIRTIOSCSI-T%lu"`), and 0x83 (Device Identification) are now answered locally rather than forwarded to VirtIO where they may fail. Unsupported VPD page codes return CHECK CONDITION ILLEGAL REQUEST.
+
+### v1.4 build 1068 — 2026-02-24
+- **Correctness**: SCSI sense key decoded and mapped to specific AmigaOS io_Error codes: `TDERR_WriteProt` (DATA PROTECT), `TDERR_DiskChanged` (UNIT ATTENTION), `TDERR_BadSecHdr` (MEDIUM ERROR), `TDERR_BadDriveType` (NOT READY/HARDWARE ERROR), `IOERR_NOCMD` (ILLEGAL REQUEST). Previously all errors reported `HFERR_BadStatus`.
+- **Correctness**: `TD_GETDRIVETYPE` handler in `cmd_stubs.c` documented — `DRIVE_NEWSTYLE` (0x44) is the correct value signalling 64-bit + NSD support.
+
+### v1.4 build 1067 — 2026-02-24
+- **Correctness**: READ CAPACITY (16) fallback for disks ≥ 2TB. `ensure_geometry_cached()` now issues READ CAPACITY (10) first; if the returned last LBA is `0xFFFFFFFF`, follows up with READ CAPACITY (16) (opcode 0x9E, service action 0x10) to get the true 64-bit block count. `total_blocks` is now `uint64`. `dg_TotalSectors` in `TD_GETGEOMETRY` response clamped to `0xFFFFFFFF` for disks over 2TB.
+- **Version**: bumped to v1.4 (DEVICE_REVISION 3 → 4).
 
 ### v1.3 build 1065 — 2026-02-24
 - **Compatibility**: ATA PASS-THROUGH stub (opcodes 0x85 / 0xA1) for S.M.A.R.T. tool support. SMART applications on AmigaOS 4 send ATA PASS-THROUGH commands via `HD_SCSICMD` (SAT layer) to retrieve ATA SMART data. Since VirtIO SCSI is not an ATA device, there is no real ATA layer to query — the driver now returns a synthetic 512-byte ATA SMART Read Data block with plausible health attributes (all green, temperature=30°C, power-on hours=1) instead of `HFERR_BadStatus` (io_Error 45). Handles both the 16-byte (0x85, primary) and 12-byte (0xA1, fallback for older drivers) pass-through variants.

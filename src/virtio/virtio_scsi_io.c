@@ -7,6 +7,38 @@
 #include <exec/memory.h>
 
 /*
+ * map_scsi_error: translate VirtIO response + SCSI status/sense to AmigaOS io_Error.
+ *
+ * Sense key lives at sense[2] & 0x0F (SPC-4 fixed-format sense, byte 2 bits 3:0).
+ * The sense buffer is only valid when virtio_resp == VIRTIO_SCSI_S_OK and
+ * scsi_status == 2 (CHECK CONDITION).  For other non-zero statuses we return
+ * HFERR_BadStatus directly.
+ */
+static int32 map_scsi_error(uint8 virtio_resp, uint8 scsi_status, uint8 sense_key)
+{
+    if (virtio_resp != VIRTIO_SCSI_S_OK)
+        return TDERR_NotSpecified;
+    if (scsi_status == 0)
+        return 0; /* GOOD */
+    if (scsi_status != 2)
+        return HFERR_BadStatus; /* non-CHECK CONDITION non-GOOD status */
+
+    /* CHECK CONDITION — decode sense key */
+    switch (sense_key & 0x0F) {
+    case 0x00: return 0;                  /* NO SENSE — treat as success */
+    case 0x01: return 0;                  /* RECOVERED ERROR — data valid */
+    case 0x02: return TDERR_BadDriveType; /* NOT READY */
+    case 0x03: return TDERR_BadSecHdr;    /* MEDIUM ERROR */
+    case 0x04: return TDERR_BadDriveType; /* HARDWARE ERROR */
+    case 0x05: return IOERR_NOCMD;        /* ILLEGAL REQUEST */
+    case 0x06: return TDERR_DiskChanged;  /* UNIT ATTENTION */
+    case 0x07: return TDERR_WriteProt;    /* DATA PROTECT */
+    case 0x0B: return TDERR_NotSpecified; /* ABORTED COMMAND */
+    default:   return HFERR_BadStatus;
+    }
+}
+
+/*
  * bounce_copy: byte-loop copy between user memory and a MEMF_SHARED bounce
  * buffer.  No libc (driver uses -nostartfiles), so we cannot call memcpy().
  * MEMF_SHARED is non-cacheable; volatile accesses prevent the compiler from
@@ -371,11 +403,11 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                         if (owner != NULL) {
                             struct IOStdReq *completed_req = owner->inflight[fslot].ioreq;
                             struct virtio_scsi_resp_cmd *resp = owner->resp_bufs[fslot];
-                            if (resp->response != VIRTIO_SCSI_S_OK || resp->status != 0) {
-                                completed_req->io_Error  = HFERR_BadStatus;
+                            completed_req->io_Error = map_scsi_error(resp->response, resp->status,
+                                                                     resp->sense[2] & 0x0F);
+                            if (completed_req->io_Error != 0) {
                                 completed_req->io_Actual = 0;
                             } else {
-                                completed_req->io_Error  = 0;
                                 completed_req->io_Actual = completed_req->io_Length - resp->residual;
                             }
                             /* Bounce read-back for inline-harvested cross-unit reads */
@@ -480,11 +512,12 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                         target, lun, (long)tries);
                 if (tries > 0)
                     continue; /* retry — resp re-zeroed at top of loop */
-                result = HFERR_BadStatus;
+                result = map_scsi_error(resp_cmd->response, resp_cmd->status,
+                                        resp_cmd->sense[2] & 0x0F);
             } else if (resp_cmd->status == 0) {
                 result = 0;
             } else {
-                result = HFERR_BadStatus;
+                result = map_scsi_error(resp_cmd->response, resp_cmd->status, 0xFF);
             }
         }
 
@@ -863,13 +896,13 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
                 struct IOStdReq *ioreq = owner->inflight[slot].ioreq;
                 struct virtio_scsi_resp_cmd *resp_cmd = owner->resp_bufs[slot];
 
-                if (resp_cmd->response != VIRTIO_SCSI_S_OK || resp_cmd->status != 0) {
-                    DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: cross-unit slot=%ld resp=0x%02X scsi_status=0x%02X\n",
-                            (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status);
-                    ioreq->io_Error  = HFERR_BadStatus;
+                ioreq->io_Error = map_scsi_error(resp_cmd->response, resp_cmd->status,
+                                                     resp_cmd->sense[2] & 0x0F);
+                if (ioreq->io_Error != 0) {
+                    DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: cross-unit slot=%ld resp=0x%02X scsi_status=0x%02X err=%ld\n",
+                            (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status, (long)ioreq->io_Error);
                     ioreq->io_Actual = 0;
                 } else {
-                    ioreq->io_Error  = 0;
                     ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
                 }
 
@@ -899,14 +932,14 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
             struct IOStdReq *ioreq = unit->inflight[slot].ioreq;
             struct virtio_scsi_resp_cmd *resp_cmd = unit->resp_bufs[slot];
 
-            /* Decode result */
-            if (resp_cmd->response != VIRTIO_SCSI_S_OK || resp_cmd->status != 0) {
-                DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: slot=%ld resp=0x%02X scsi_status=0x%02X\n",
-                        (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status);
-                ioreq->io_Error  = HFERR_BadStatus;
+            /* Decode result using sense key for accurate io_Error */
+            ioreq->io_Error = map_scsi_error(resp_cmd->response, resp_cmd->status,
+                                             resp_cmd->sense[2] & 0x0F);
+            if (ioreq->io_Error != 0) {
+                DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: slot=%ld resp=0x%02X scsi_status=0x%02X err=%ld\n",
+                        (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status, (long)ioreq->io_Error);
                 ioreq->io_Actual = 0;
             } else {
-                ioreq->io_Error  = 0;
                 ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
             }
 

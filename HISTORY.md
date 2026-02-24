@@ -132,6 +132,51 @@ This file contains a persistent timeline of the development steps and decisions 
 - Fixed by wrapping ALL `VirtQueue_GetBuf()` calls (in both `Harvest` and DoIO drain loop) in `io_lock` semaphore — release before `ReplyMsg`, re-acquire at loop bottom.
 - System boots to Workbench; both filesystems mount. One drive still missing due to cross-unit cookie loss.
 
+## v1.4 Correctness and Robustness
+
+### Build 1070: Increase MAX_INFLIGHT from 8 to 16
+
+- **Change**: `#define MAX_INFLIGHT 16` (was 8) in `include/virtioscsi.h`.
+- **Effect**: Each unit task can now sustain 16 concurrent block I/O requests in-flight simultaneously. The VirtIO requestq has 256 slots; with two units sharing it, 16 slots each gives full pipeline utilisation on sequential workloads. All array declarations, allocation loops, and Harvest cross-unit search already used `MAX_INFLIGHT` symbolically — no other code changes needed.
+- **Memory**: ~34KB additional MEMF_SHARED per unit (~68KB total): 8 extra req_cmd (51B), resp_cmd (108B), and bounce buffer (4096B) slots.
+
+### Build 1069: SCSI INQUIRY VPD Pages
+
+- **Problem**: `Handle_SCSI_Inquiry()` passed all INQUIRY commands directly to VirtIO. SCSI tools requesting Vital Product Data pages (EVPD=1) could receive CHECK CONDITION if QEMU's VirtIO SCSI didn't support a given page code, surfacing as `HFERR_BadStatus`.
+- **Fix**: Check `CDB[1] & 0x01` (EVPD bit) before forwarding. Standard INQUIRY (EVPD=0) still passes through to VirtIO unchanged. For EVPD=1, intercept three page codes with synthetic responses:
+  - **Page 0x00** (Supported VPD Pages List): returns 7-byte list advertising pages 0x00, 0x80, 0x83.
+  - **Page 0x80** (Unit Serial Number): returns `"VIRTIOSCSI-T%lu"` formatted with `unit->target_id` via `IUtility->SNPrintf()`.
+  - **Page 0x83** (Device Identification): returns a T10 vendor ID designation descriptor `"QEMU    virtioscsi      T%lu"` (8-char vendor + 16-char product + target ID).
+  - **All other page codes with EVPD=1**: return CHECK CONDITION ILLEGAL REQUEST / INVALID FIELD IN CDB (sense key 0x05, ASC 0x24, ASCQ 0x00).
+- **Files changed**: `src/scsi_cmds/scsi_inquiry.c`.
+
+### Build 1068: Proper SCSI Error → io_Error Mapping; TD_GETDRIVETYPE documentation
+
+- **Problem A**: All non-GOOD SCSI completions mapped to `HFERR_BadStatus` (45) regardless of sense key, losing information that filesystems could use for error recovery.
+- **Fix A**: New `static int32 map_scsi_error(uint8 virtio_resp, uint8 scsi_status, uint8 sense_key)` helper in `virtio_scsi_io.c`. Sense key extracted from `resp_cmd->sense[2] & 0x0F`. Mapping:
+  - `0x02` NOT READY → `TDERR_BadDriveType`
+  - `0x03` MEDIUM ERROR → `TDERR_BadSecHdr`
+  - `0x05` ILLEGAL REQUEST → `IOERR_NOCMD`
+  - `0x06` UNIT ATTENTION → `TDERR_DiskChanged`
+  - `0x07` DATA PROTECT → `TDERR_WriteProt`
+  - `0x00`/`0x01` NO SENSE/RECOVERED → `0` (success)
+  - All others → `HFERR_BadStatus`
+  Applied at 4 sites: Harvest own-unit, Harvest cross-unit, DoIO inline-harvest, DoIO final result decode.
+- **Problem B**: `Handle_TD_GetDriveType()` in `cmd_stubs.c` already returned the correct value (`DRIVE_NEWSTYLE`, 0x44) and set `io_Error = 0`, but lacked explanation.
+- **Fix B**: Added detailed comment explaining why `DRIVE_NEWSTYLE` is correct for a fixed-disk device supporting TD_READ64/WRITE64 and NSCMD_TD_* commands.
+- **Files changed**: `src/virtio/virtio_scsi_io.c`, `src/exec_cmds/cmd_stubs.c`.
+
+### Build 1067: READ CAPACITY (16) for >2TB disks; version bumped to v1.4
+
+- **Problem**: `ensure_geometry_cached()` used a hard-coded READ CAPACITY (10) CDB (opcode 0x25, 8-byte response, 32-bit last LBA). Disks ≥ 2TB return `0xFFFFFFFF` as the last LBA — a sentinel indicating READ CAPACITY (16) must be used. `total_blocks` was stored as `uint32`, limiting reported size to ~2TB.
+- **Fix**: Two-step geometry discovery:
+  1. Issue READ CAPACITY (10). If last LBA == `0xFFFFFFFF`:
+  2. Issue READ CAPACITY (16) (opcode `0x9E`, service action `0x10`, 32-byte response) to get the true 64-bit last LBA and block size.
+  `total_blocks` changed from `uint32` to `uint64` in `VirtIOUSCSIDevUnit`. `dg_TotalSectors` in `TD_GETGEOMETRY` response clamped to `0xFFFFFFFF` for disks > 2TB (field is `uint32`).
+- **New function**: `make_read_capacity16_cdb(uint8 *cdb)` added to `scsi_cdb_helpers.c`/`.h`.
+- **Version**: `DEVICE_REVISION` bumped from 3 to 4, first build of v1.4.
+- **Files changed**: `include/virtioscsi.h`, `include/scsi_cdb_helpers.h`, `src/scsi_cdb_helpers.c`, `src/exec_cmds/cmd_td_getgeometry.c`, `include/version.h`.
+
 ### Build 1066: Documentation update; Items 5 and 6 verified complete
 
 - **Verification**: Confirmed that Items 5 (VIRTIO_F_INDIRECT_DESC) and 6 (READ(16)/WRITE(16)) from the performance plan are already implemented in the codebase.

@@ -25,13 +25,21 @@ void Handle_TD_ProtStatus(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     req->io_Error = 0;
 }
 
-/* TD_GETDRIVETYPE: Returns DRIVE_NEWSTYLE to signal 64-bit and NSD support */
+/*
+ * TD_GETDRIVETYPE: Returns DRIVE_NEWSTYLE (0x44).
+ *
+ * DRIVE_NEWSTYLE signals to filesystems and tools that this device supports
+ * 64-bit block addressing (TD_READ64/TD_WRITE64) and New-Style Device (NSD)
+ * commands (NSCMD_TD_READ64, NSCMD_TD_WRITE64, NSCMD_TD_GETGEOMETRY64).
+ * This is the correct value for a VirtIO SCSI disk: it is a fixed-access
+ * device with full 64-bit LBA support and no floppy/removable-media behaviour.
+ */
 void Handle_TD_GetDriveType(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 {
     struct VirtIOUSCSIDevUnit *unit = (struct VirtIOUSCSIDevUnit *)req->io_Unit;
     DPRINTF(libBase->IExec, "[virtioscsi] TD_GETDRIVETYPE called for T%lu L%lu\n", unit->target_id, unit->lun_id);
-    req->io_Error = 0;
-    req->io_Actual = DRIVE_NEWSTYLE;
+    req->io_Error  = 0;
+    req->io_Actual = DRIVE_NEWSTYLE; /* 0x44 */
 }
 
 /* Generic success handler for commands we don't emulate but must return cleanly */

@@ -57,7 +57,7 @@ struct VirtIOUSCSIDevUnit
     uint32 lun_id;
     uint32 open_count;
     /* Cached disk geometry (populated on first READ CAPACITY) */
-    uint32 total_blocks;
+    uint64 total_blocks; /* 64-bit: supports >2TB disks (READ CAPACITY 16) */
     uint32 block_size;
     BOOL geometry_valid;
     /* Held change notification requests (must NOT be replied to until removed) */
@@ -117,7 +117,7 @@ struct VirtIOUSCSIDevUnit
      * Slot 0 is also used by the synchronous path to avoid double-allocation.
      * ioreq == NULL means the slot is free.
      */
-#define MAX_INFLIGHT 8
+#define MAX_INFLIGHT 16
 
 /*
      * Bounce buffer size threshold.  Transfers at or below this size use a

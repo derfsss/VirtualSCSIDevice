@@ -30,12 +30,19 @@ void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
         uint32 sectors_per_track = 16;
         uint32 heads = 4;
 
+        /* dg_TotalSectors and dg_Cylinders are uint32 — clamp for >2TB disks */
+        uint32 cyl_sectors = heads * sectors_per_track;
+        uint32 total32 = (unit->total_blocks > 0xFFFFFFFFULL)
+                         ? 0xFFFFFFFFUL : (uint32)unit->total_blocks;
+        uint32 cylinders = (uint32)(unit->total_blocks / cyl_sectors);
+        if (cylinders == 0) cylinders = 1;
+
         geom->dg_SectorSize = unit->block_size;
-        geom->dg_TotalSectors = unit->total_blocks;
+        geom->dg_TotalSectors = total32;
         geom->dg_Heads = heads;
         geom->dg_TrackSectors = sectors_per_track;
-        geom->dg_CylSectors = heads * sectors_per_track;
-        geom->dg_Cylinders = unit->total_blocks / geom->dg_CylSectors;
+        geom->dg_CylSectors = cyl_sectors;
+        geom->dg_Cylinders = cylinders;
         geom->dg_BufMemType = MEMF_PUBLIC;
         geom->dg_DeviceType = 0; /* DG_DIRECT_ACCESS */
         geom->dg_Flags = 0;
