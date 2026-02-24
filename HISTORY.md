@@ -132,6 +132,13 @@ This file contains a persistent timeline of the development steps and decisions 
 - Fixed by wrapping ALL `VirtQueue_GetBuf()` calls (in both `Harvest` and DoIO drain loop) in `io_lock` semaphore — release before `ReplyMsg`, re-acquire at loop bottom.
 - System boots to Workbench; both filesystems mount. One drive still missing due to cross-unit cookie loss.
 
+### Build 1066: Documentation update; Items 5 and 6 verified complete
+
+- **Verification**: Confirmed that Items 5 (VIRTIO_F_INDIRECT_DESC) and 6 (READ(16)/WRITE(16)) from the performance plan are already implemented in the codebase.
+- **Item 5 status**: Infrastructure fully present — `vring_indirect_desc` struct, `indirect_tables[]` array, AddBuf indirect path, GetBuf cleanup are all implemented in `virtqueue.c`/`.h`. Feature negotiation is intentionally disabled in `virtio_init.c` due to QEMU legacy endianness incompatibility: QEMU's legacy VirtIO SCSI reads indirect descriptor table entries as little-endian, but the driver fills them in native PPC big-endian byte order, causing QEMU to see garbage lengths ("wrong size for virtio-scsi headers"). The direct chained-descriptor path works correctly and supports up to MAX_SG_ENTRIES=64 entries. Re-enabling INDIRECT_DESC would require either byte-swapping all indirect table fields (addr, len, flags) or switching to VirtIO 1.0 modern mode.
+- **Item 6 status**: Fully implemented. `make_read16_cdb()`/`make_write16_cdb()` (16-byte CDB, 64-bit LBA) are present in `scsi_cdb_helpers.c`. Both `cmd_td_io64.c` and `ns_td_io64.c` dispatch to READ(16)/WRITE(16) when `lba > 0xFFFFFFFF` and to READ(10)/WRITE(10) otherwise.
+- **Documentation**: All project documents updated and committed; changes pushed to GitHub. Build moved to release mode (no -DDEBUG).
+
 ### Build 1065: ATA PASS-THROUGH stub for SMART tool compatibility
 
 - **Problem**: SMART applications (e.g. AmigaDiskBench) issue `HD_SCSICMD` with opcode `0x85` (ATA PASS-THROUGH 16, SAT spec) to send an ATA SMART READ DATA command (`0xB0`/`0xD0`). A fallback to opcode `0xA1` (ATA PASS-THROUGH 12) is tried if the first attempt fails. Both opcodes were unhandled — the driver returned `HFERR_BadStatus` (io_Error 45) from `scsi_parse.c`'s default case.
