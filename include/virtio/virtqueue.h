@@ -71,6 +71,32 @@ struct vring_sg
     uint32 len;
 };
 
+/*
+ * Vring field byte-swap helpers for modern VirtIO.
+ *
+ * Modern VirtIO (VIRTIO_F_VERSION_1) requires all vring structure fields to
+ * be little-endian, while the PPC guest is big-endian.  When vq->modern is
+ * TRUE, every vring field read or written must go through these helpers.
+ *
+ * GCC on PPC emits bswap instructions for __builtin_bswap16/32/64, so there
+ * is no performance penalty versus a hand-coded byte-swap.
+ *
+ * Legacy mode (vq->modern == FALSE): all fields are native big-endian — the
+ * helpers are no-ops.
+ */
+static inline uint16 vr16(BOOL modern, uint16 v)
+{
+    return modern ? __builtin_bswap16(v) : v;
+}
+static inline uint32 vr32(BOOL modern, uint32 v)
+{
+    return modern ? __builtin_bswap32(v) : v;
+}
+static inline uint64 vr64(BOOL modern, uint64 v)
+{
+    return modern ? __builtin_bswap64(v) : v;
+}
+
 /* VirtQueue High-Level Management Struct */
 struct virtqueue
 {
@@ -94,8 +120,25 @@ struct virtqueue
     uint32 mem_size;
 
     /* DMA mapping for the vring (kept live; freed in VirtQueue_Free) */
-    uint32 dma_phys;    /* Physical base address of the vring */
+    uint32 dma_phys;    /* Physical base address of the vring (desc table start) */
     uint32 dma_entries; /* Entry count returned by StartDMA (0 = not mapped) */
+
+    /* Modern VirtIO: physical addresses of the three vring regions.
+     * Used by InitVirtIOSCSI_Modern() to write per-queue address registers.
+     * dma_phys == avail_phys == used_phys layout follows VirtQueue_Allocate's
+     * contiguous single-alloc: desc at base, avail immediately after,
+     * used page-aligned after avail. */
+    uint32 avail_phys;  /* Physical address of the avail (driver) ring */
+    uint32 used_phys;   /* Physical address of the used (device) ring */
+
+    /* Modern VirtIO: queue notification address.
+     * Set to: notify_cfg_base + queue_notify_off * notify_off_mult.
+     * VirtQueue_Kick writes the queue index here (modern) or to
+     * iobase + VIRTIO_PCI_QUEUE_NOTIFY (legacy, iobase passed by caller). */
+    uint32 notify_addr;
+
+    /* TRUE if this queue uses little-endian vring fields (modern VirtIO). */
+    BOOL modern;
 
     /* VIRTIO_F_EVENT_IDX: suppress redundant kicks.
      * avail_event lives at the end of the used ring (device writes it).

@@ -19,7 +19,6 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
 {
     struct VirtIOSCSIBase *base = (struct VirtIOSCSIBase *)is_Data;
     struct PCIDevice *pciDev = base->pciDevice;
-    uint32 iobase = (uint32)base->bar0->Physical;
 
     (void)ctx;
 
@@ -30,8 +29,20 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
      *
      * If ISR == 0, this interrupt is not ours — return 0 to let the
      * next handler in the shared chain process it.
+     *
+     * In modern mode, the ISR register lives in the ISR_CFG capability region
+     * (a dedicated MMIO address, accessed via isr_cfg_base).  In legacy mode
+     * it is at BAR0 + VIRTIO_PCI_ISR.
+     *
+     * No DebugPrintF in interrupt context.
      */
-    uint8 isr = pciDev->InByte(iobase + VIRTIO_PCI_ISR);
+    uint8 isr;
+    if (base->modern_mode) {
+        isr = pciDev->InByte(base->isr_cfg_base);
+    } else {
+        uint32 iobase = (uint32)base->bar0->Physical;
+        isr = pciDev->InByte(iobase + VIRTIO_PCI_ISR);
+    }
 
     if (isr == 0)
         return 0; /* Not our interrupt */

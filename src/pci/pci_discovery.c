@@ -1,4 +1,5 @@
 #include "pci/pci_discovery.h"
+#include "pci/pci_modern_detect.h"
 #include "virtioscsi.h"
 
 BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
@@ -38,8 +39,9 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     libBase->bar4 = device->GetResourceRange(4);
 
     if (libBase->bar0) {
-        DPRINTF(IExec, "[virtioscsi:pci_discovery.c] PCI_Discovery: BAR0 (I/O) mapped at Physical 0x%08lX, Size: %lu\n",
-                libBase->bar0->Physical, libBase->bar0->Size);
+        const char *bar0_type = (libBase->bar0->Flags & PCI_RANGE_IO) ? "I/O" : "MEM";
+        DPRINTF(IExec, "[virtioscsi:pci_discovery.c] PCI_Discovery: BAR0 (%s) mapped at Physical 0x%08lX, Size: %lu\n",
+                bar0_type, libBase->bar0->Physical, libBase->bar0->Size);
     }
 
     if (libBase->bar4) {
@@ -52,6 +54,11 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      * Keep the device handle live in libBase->pciDevice — do NOT call
      * IPCI->FreeDevice() here. BAR mappings must remain valid for the
      * driver's lifetime; they are released in _manager_Expunge().
+     *
+     * Walk the PCI capability list to detect modern VirtIO and populate
+     * the cfg_base fields used by InitVirtIOSCSI_Modern().
      */
+    DetectModernVirtIO(libBase);
+
     return TRUE;
 }

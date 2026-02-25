@@ -31,11 +31,20 @@ struct VirtIOSCSIBase
     struct Library *UtilityBase;
     struct UtilityIFace *IUtility;
     struct PCIDevice *pciDevice;
-    struct PCIResourceRange *bar0; // I/O
-    struct PCIResourceRange *bar4; // MMIO
+    struct PCIResourceRange *bar0; /* Legacy: I/O BAR; Modern: may be memory BAR */
+    struct PCIResourceRange *bar4; /* MMIO BAR (unused in legacy) */
+
+    /* Modern VirtIO mode flag and config region physical addresses.
+     * Populated by DetectModernVirtIO() before InitVirtIOSCSI(). */
+    BOOL   modern_mode;        /* TRUE if VIRTIO_F_VERSION_1 caps found */
+    uint32 common_cfg_base;    /* Physical: BAR base + COMMON_CFG cap offset */
+    uint32 notify_cfg_base;    /* Physical: BAR base + NOTIFY_CFG cap offset */
+    uint32 notify_off_mult;    /* Per-queue notify offset multiplier (0 = shared) */
+    uint32 isr_cfg_base;       /* Physical: BAR base + ISR_CFG cap offset */
+    uint32 device_cfg_base;    /* Physical: BAR base + DEVICE_CFG cap offset */
 
     /* VirtIO */
-    struct virtqueue *vqs[3]; // 0: controlq, 1: eventq, 2: requestq
+    struct virtqueue *vqs[3]; /* 0: controlq, 1: eventq, 2: requestq */
 
     BPTR dev_SegList;
     struct VirtIOUSCSIDevUnit *units[8];

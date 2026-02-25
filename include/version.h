@@ -3,8 +3,8 @@
 
 /* Individual version components */
 #define DEVICE_VERSION 1
-#define DEVICE_REVISION 4
-#define DEVICE_BUILD 1070
+#define DEVICE_REVISION 5
+#define DEVICE_BUILD 1075
 #define DEVICE_DATE "24.02.2026"
 #define DEVNAME "virtioscsi.device"
 

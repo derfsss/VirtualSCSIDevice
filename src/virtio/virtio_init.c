@@ -1,4 +1,5 @@
 #include "virtio/virtio_init.h"
+#include "virtio/virtio_pci_modern.h"
 #include "virtio/virtio_scsi.h"
 #include "virtio/virtqueue.h"
 #include "virtioscsi.h"
@@ -18,6 +19,9 @@
  * Big Endian PowerPC, so we pass native values directly.
  */
 
+/* Forward declaration — defined below */
+static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase);
+
 BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
 {
     struct ExecIFace *IExec = libBase->IExec;
@@ -32,6 +36,10 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         DPRINTF(IExec, "[virtioscsi] InitVirtIO: BAR0 not available.\n");
         return FALSE;
     }
+
+    /* Dispatch to the appropriate init path */
+    if (libBase->modern_mode)
+        return InitVirtIOSCSI_Modern(libBase);
 
     /* BAR0 base is the I/O port base address */
     uint32 iobase = (uint32)libBase->bar0->Physical;
@@ -187,15 +195,202 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     return TRUE;
 }
 
+/*
+ * InitVirtIOSCSI_Modern: Modern VirtIO 1.0 initialization sequence.
+ *
+ * Uses the common config region mapped via the vendor-specific PCI capability
+ * chain.  Registers are little-endian; pciDev->SetEndian(PCI_MODE_LITTLE_ENDIAN)
+ * is called once at entry and persists for the life of this PCIDevice handle.
+ *
+ * Queue address registration uses three 32-bit register pairs (DESC/AVAIL/USED
+ * low+high) instead of a single legacy PFN.  Physical addresses are 32-bit only
+ * (high halves written as 0) since AmigaOS 4.1 operates in a 32-bit address space.
+ */
+static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
+{
+    struct ExecIFace *IExec = libBase->IExec;
+    struct PCIDevice *pciDev = libBase->pciDevice;
+    uint32 base = libBase->common_cfg_base;
+
+    DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: common_cfg=0x%08lX\n", base);
+
+    /* All subsequent In/Out operations via pciDev use little-endian byte order. */
+    pciDev->SetEndian(PCI_MODE_LITTLE_ENDIAN);
+
+    /* Step 1: Reset */
+    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS, 0x00);
+
+    /* Step 2: ACKNOWLEDGE */
+    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
+
+    /* Step 3: DRIVER */
+    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS,
+                    VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+    /*
+     * Step 4: Feature negotiation.
+     *
+     * MMIO note: InWord/InLong return 0 on this platform for memory BARs.
+     * Only InByte/OutByte work for MMIO.  All multi-byte register access
+     * uses the mmio_r16/mmio_r32/mmio_w16/mmio_w32 byte-assembly helpers.
+     */
+    mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFSELECT, 0);
+    uint32 dev_feat_lo = mmio_r32(pciDev, base + VIRTIO_PCI_COMMON_DF);
+
+    mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFSELECT, 1);
+    uint32 dev_feat_hi = mmio_r32(pciDev, base + VIRTIO_PCI_COMMON_DF);
+
+    DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Device features hi=0x%08lX lo=0x%08lX\n",
+            dev_feat_hi, dev_feat_lo);
+
+    /*
+     * Accept EVENT_IDX (bit 29 in low word) for interrupt coalescing.
+     * Always accept VIRTIO_F_VERSION_1 (bit 0 in high word = bit 32 overall).
+     * Reject INDIRECT_DESC (bit 28) — not needed in modern path.
+     */
+    uint32 drv_feat_lo = dev_feat_lo & (1UL << 29); /* EVENT_IDX */
+    uint32 drv_feat_hi = dev_feat_hi & 1UL;          /* VIRTIO_F_VERSION_1 */
+
+    mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFSELECTG, 0);
+    mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFG, drv_feat_lo);
+
+    mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFSELECTG, 1);
+    mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFG, drv_feat_hi);
+
+    DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Driver features hi=0x%08lX lo=0x%08lX\n",
+            drv_feat_hi, drv_feat_lo);
+    BOOL use_event_idx = (drv_feat_lo & (1UL << 29)) != 0;
+
+    /* Step 5: Set FEATURES_OK */
+    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS,
+                    VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
+
+    /* Step 6: Verify FEATURES_OK is still set — device may reject features */
+    uint8 status_check = pciDev->InByte(base + VIRTIO_PCI_COMMON_STATUS);
+    if (!(status_check & VIRTIO_STATUS_FEATURES_OK)) {
+        DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: FEATURES_OK rejected! Status=0x%02X\n",
+                (uint32)status_check);
+        pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_FAILED);
+        return FALSE;
+    }
+    DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: FEATURES_OK accepted. Status=0x%02X\n",
+            (uint32)status_check);
+
+    /* Step 7: VirtQueue Setup — queues 0 (controlq), 1 (eventq), 2 (requestq) */
+    uint16 q;
+    for (q = 0; q <= 2; q++) {
+        mmio_w16(pciDev, base + VIRTIO_PCI_COMMON_Q_SELECT, q);
+
+        uint16 q_max = mmio_r16(pciDev, base + VIRTIO_PCI_COMMON_Q_SIZE);
+        if (q_max == 0) {
+            DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Queue %u unavailable.\n", (uint32)q);
+            continue;
+        }
+
+        DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Queue %u max size: %u\n",
+                (uint32)q, (uint32)q_max);
+
+        struct virtqueue *vq = VirtQueue_Allocate(IExec, q, q_max);
+        if (!vq) {
+            DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Failed to allocate Queue %u.\n", (uint32)q);
+            return FALSE;
+        }
+
+        /* DMA-map the vring to obtain physical addresses */
+        uint32 vring_entries = IExec->StartDMA(vq->desc, vq->mem_size, DMA_ReadFromRAM);
+        if (vring_entries == 0) {
+            DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: StartDMA failed for queue %u\n", (uint32)q);
+            VirtQueue_Free(IExec, vq);
+            return FALSE;
+        }
+
+        struct DMAEntry *vring_dma = (struct DMAEntry *)IExec->AllocSysObjectTags(
+            ASOT_DMAENTRY, ASODMAE_NumEntries, vring_entries, TAG_DONE);
+        if (!vring_dma) {
+            IExec->EndDMA(vq->desc, vq->mem_size, DMA_ReadFromRAM | DMAF_NoModify);
+            VirtQueue_Free(IExec, vq);
+            return FALSE;
+        }
+
+        IExec->GetDMAList(vq->desc, vq->mem_size, DMA_ReadFromRAM, vring_dma);
+        uint32 desc_phys = (uint32)vring_dma[0].PhysicalAddress;
+        IExec->FreeSysObject(ASOT_DMAENTRY, vring_dma);
+
+        /* Keep the DMA mapping live — EndDMA called in VirtQueue_Free */
+        vq->dma_phys    = desc_phys;
+        vq->dma_entries = vring_entries;
+
+        /*
+         * Compute physical addresses of avail and used rings (contiguous layout,
+         * Section 2.7.2): desc table at base, avail immediately after,
+         * used ring page-aligned after avail.
+         */
+        uint32 desc_size   = sizeof(struct vring_desc) * q_max;
+        uint32 avail_size  = sizeof(uint16) * (3 + q_max);
+        uint32 used_offset = (desc_size + avail_size + 4095U) & ~4095U;
+
+        vq->avail_phys = desc_phys + desc_size;
+        vq->used_phys  = desc_phys + used_offset;
+
+        /* Register the three ring addresses in the common config */
+        mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_Q_DESCLO,  desc_phys);
+        mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_Q_DESCHI,  0);
+        mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_Q_AVAILLO, vq->avail_phys);
+        mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_Q_AVAILHI, 0);
+        mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_Q_USEDLO,  vq->used_phys);
+        mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_Q_USEDHI,  0);
+
+        /* Enable the queue */
+        mmio_w16(pciDev, base + VIRTIO_PCI_COMMON_Q_ENABLE, 1);
+
+        /*
+         * Read per-queue notify offset and compute the notification address.
+         * notify addr = notify_cfg_base + Q_NOFF * notify_off_mult.
+         * If notify_off_mult == 0, all queues share the base address.
+         */
+        uint16 q_noff = mmio_r16(pciDev, base + VIRTIO_PCI_COMMON_Q_NOFF);
+        uint32 notify_mult = libBase->notify_off_mult;
+        vq->notify_addr = libBase->notify_cfg_base +
+                          (notify_mult ? (uint32)q_noff * notify_mult : 0);
+
+        vq->modern = TRUE;
+        vq->use_event_idx = use_event_idx;
+        vq->last_kick_avail_idx = 0xFFFF; /* ensures first kick always fires */
+        vq->use_indirect = FALSE;
+
+        libBase->vqs[q] = vq;
+
+        DPRINTF(IExec,
+                "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Q%u enabled  desc=0x%08lX avail=0x%08lX used=0x%08lX notify=0x%08lX\n",
+                (uint32)q, desc_phys, vq->avail_phys, vq->used_phys, vq->notify_addr);
+    }
+
+    /* Step 8: Set DRIVER_OK */
+    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS,
+                    VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
+                    VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+
+    uint8 final_status = pciDev->InByte(base + VIRTIO_PCI_COMMON_STATUS);
+    DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Complete. Status=0x%02X\n",
+            (uint32)final_status);
+
+    return TRUE;
+}
+
 void CleanupVirtIOSCSI(struct VirtIOSCSIBase *libBase)
 {
     struct ExecIFace *IExec = libBase->IExec;
     struct PCIDevice *pciDev = libBase->pciDevice;
 
-    if (pciDev && libBase->bar0) {
-        uint32 iobase = (uint32)libBase->bar0->Physical;
+    if (pciDev) {
         /* Reset the device to stop all DMA */
-        pciDev->OutByte(iobase + VIRTIO_PCI_STATUS, 0x00);
+        if (libBase->modern_mode && libBase->common_cfg_base) {
+            pciDev->SetEndian(PCI_MODE_LITTLE_ENDIAN);
+            pciDev->OutByte(libBase->common_cfg_base + VIRTIO_PCI_COMMON_STATUS, 0x00);
+        } else if (libBase->bar0) {
+            uint32 iobase = (uint32)libBase->bar0->Physical;
+            pciDev->OutByte(iobase + VIRTIO_PCI_STATUS, 0x00);
+        }
         DPRINTF(IExec, "[virtioscsi:virtio_init.c] VirtIO: Hardware Reset Issued.\n");
     }
 

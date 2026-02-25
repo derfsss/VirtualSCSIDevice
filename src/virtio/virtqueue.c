@@ -1,5 +1,6 @@
 #include "virtio/virtqueue.h"
 #include "virtio/virtio_scsi.h"
+#include "virtio/virtio_pci_modern.h"
 #include "virtioscsi.h"
 #include <exec/exectags.h>
 #include <exec/memory.h>
@@ -94,6 +95,10 @@ struct virtqueue *VirtQueue_Allocate(struct ExecIFace *IExec, uint32 queue_index
     vq->free_head = 0;
     vq->num_free = (uint16)queue_size;
     vq->last_used_idx = 0;
+    vq->modern = FALSE;    /* set TRUE by InitVirtIOSCSI_Modern() if applicable */
+    vq->notify_addr = 0;   /* set by InitVirtIOSCSI_Modern() */
+    vq->avail_phys = 0;    /* set after DMA mapping in virtio_init.c */
+    vq->used_phys  = 0;    /* set after DMA mapping in virtio_init.c */
 
     uint32 j;
     for (j = 0; j < queue_size - 1; j++) {
@@ -217,22 +222,33 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
     uint16 idx = head;
 
     for (n = 0; n < total; n++) {
-        vq->desc[idx].addr = (uint64)sg[n].addr;
-        vq->desc[idx].len = sg[n].len;
-        vq->desc[idx].flags = 0;
+        uint16 desc_flags = 0;
 
         /* Set WRITE flag for device-writable (IN) entries */
-        if (n >= out_num) {
-            vq->desc[idx].flags |= VRING_DESC_F_WRITE;
-        }
+        if (n >= out_num)
+            desc_flags |= VRING_DESC_F_WRITE;
 
         /* Chain to next descriptor (except the last one) */
+        if (n < total - 1)
+            desc_flags |= VRING_DESC_F_NEXT;
+
+        /*
+         * Write descriptor fields.  In modern mode all fields are little-endian;
+         * vr64/vr32/vr16 byte-swap as needed.  In legacy mode they are no-ops.
+         *
+         * Read vq->desc[idx].next (the pre-chained free-list link) BEFORE
+         * overwriting flags, since we need the native value for the chain walk.
+         */
+        uint16 next_idx = vq->desc[idx].next; /* always stored native in free list */
+        vq->desc[idx].addr  = vr64(vq->modern, (uint64)sg[n].addr);
+        vq->desc[idx].len   = vr32(vq->modern, sg[n].len);
+        vq->desc[idx].flags = vr16(vq->modern, desc_flags);
         if (n < total - 1) {
-            vq->desc[idx].flags |= VRING_DESC_F_NEXT;
-            idx = vq->desc[idx].next;
+            vq->desc[idx].next = vr16(vq->modern, next_idx);
+            idx = next_idx;
         } else {
-            /* Advance free_head past this chain */
-            vq->free_head = vq->desc[idx].next;
+            /* Advance free_head past this chain (next_idx is the next free slot) */
+            vq->free_head = next_idx;
         }
     }
 
@@ -244,13 +260,13 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
     vq->indirect_tables[head] = NULL;
 
     /* Add head to the available ring */
-    uint16 avail_idx = vq->avail->idx;
-    vq->avail->ring[avail_idx % vq->num] = head;
+    uint16 avail_idx = vr16(vq->modern, vq->avail->idx);
+    vq->avail->ring[avail_idx % vq->num] = vr16(vq->modern, head);
 
     /* Memory barrier: ensure descriptor writes are visible before idx update. */
     __asm__ volatile("eieio" ::: "memory");
 
-    vq->avail->idx = avail_idx + 1;
+    vq->avail->idx = vr16(vq->modern, (uint16)(avail_idx + 1));
 
     return 0;
 }
@@ -285,8 +301,21 @@ void VirtQueue_Kick(struct ExecIFace *IExec, struct virtqueue *vq, struct PCIDev
      * skip the kick-suppression half and always send QUEUE_NOTIFY.
      */
     DPRINTF(IExec, "[virtioscsi:virtqueue.c] Kick VQ%lu: notify (avail_idx=%u)\n",
-            vq->index, (unsigned)vq->avail->idx);
-    pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY, (uint16)vq->index);
+            vq->index, (unsigned)vr16(vq->modern, vq->avail->idx));
+
+    if (vq->modern) {
+        /*
+         * Modern VirtIO: write the queue index to the per-queue notification
+         * address (notify_cfg_base + queue_notify_off * notify_off_mult).
+         * SetEndian was already called once in InitVirtIOSCSI_Modern(); it
+         * persists for the lifetime of this PCIDevice handle.
+         */
+        /* notify region is MMIO — OutWord doesn't work, use byte-assembly helper */
+        mmio_w16(pciDev, vq->notify_addr, (uint16)vq->index);
+    } else {
+        /* Legacy: write queue index to the shared QUEUE_NOTIFY I/O port. */
+        pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY, (uint16)vq->index);
+    }
 }
 
 /*
@@ -300,13 +329,13 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
     /* Memory barrier: read used->idx after device writes */
     __asm__ volatile("lwsync" ::: "memory");
 
-    if (vq->last_used_idx == vq->used->idx)
+    if (vq->last_used_idx == vr16(vq->modern, vq->used->idx))
         return NULL;
 
     /* Read the next used ring entry */
     uint16 used_slot = vq->last_used_idx % vq->num;
-    uint32 desc_id = vq->used->ring[used_slot].id;
-    uint32 written = vq->used->ring[used_slot].len;
+    uint32 desc_id = vr32(vq->modern, vq->used->ring[used_slot].id);
+    uint32 written = vr32(vq->modern, vq->used->ring[used_slot].len);
 
     if (len_out)
         *len_out = written;
@@ -329,26 +358,26 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
          * Release the DMA mapping and free the table, then return 1 descriptor.
          * The indirect table length was stored in desc[idx].len.
          */
-        uint32 itbl_size = vq->desc[idx].len;
+        uint32 itbl_size = vr32(vq->modern, vq->desc[idx].len);
         IExec->EndDMA(itbl_virt, itbl_size, DMA_ReadFromRAM | DMAF_NoModify);
         IExec->FreeVec(itbl_virt);
 
         vq->desc[idx].addr  = 0;
         vq->desc[idx].len   = 0;
         vq->desc[idx].flags = 0;
-        vq->desc[idx].next  = vq->free_head;
+        vq->desc[idx].next  = vq->free_head; /* free-list links always native */
         vq->free_head = idx;
         freed = 1;
     } else {
         /* Direct chain path: walk and free all descriptors in the chain */
         while (1) {
-            uint16 next = vq->desc[idx].next;
-            uint16 has_next = vq->desc[idx].flags & VRING_DESC_F_NEXT;
+            uint16 next     = vr16(vq->modern, vq->desc[idx].next);
+            uint16 has_next = vr16(vq->modern, vq->desc[idx].flags) & VRING_DESC_F_NEXT;
 
-            vq->desc[idx].addr = 0;
-            vq->desc[idx].len = 0;
+            vq->desc[idx].addr  = 0;
+            vq->desc[idx].len   = 0;
             vq->desc[idx].flags = 0;
-            vq->desc[idx].next = vq->free_head;
+            vq->desc[idx].next  = vq->free_head; /* free-list links always native */
             vq->free_head = idx;
             freed++;
 
@@ -383,7 +412,7 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
      *   (last+1 - last - 1) < (last+1 - last)  →  0 < 1  →  TRUE ✓
      */
     if (vq->use_event_idx) {
-        vq->avail->ring[vq->num] = vq->last_used_idx;
+        vq->avail->ring[vq->num] = vr16(vq->modern, vq->last_used_idx);
         __asm__ volatile("eieio" ::: "memory");
     }
 

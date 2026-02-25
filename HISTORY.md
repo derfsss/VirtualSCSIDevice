@@ -132,6 +132,57 @@ This file contains a persistent timeline of the development steps and decisions 
 - Fixed by wrapping ALL `VirtQueue_GetBuf()` calls (in both `Harvest` and DoIO drain loop) in `io_lock` semaphore — release before `ReplyMsg`, re-acquire at loop bottom.
 - System boots to Workbench; both filesystems mount. One drive still missing due to cross-unit cookie loss.
 
+## v1.5 Modern VirtIO Investigation (Build 1071)
+
+### Build 1071: test_modern.c — Modern VirtIO Platform Investigation (February 2026)
+
+Standalone test program (`tests/test_modern.c`) to probe VirtIO 1.0 Modern (non-transitional) device support before modifying the production driver. The program performs full VirtIO 1.0 initialization on any found VirtIO device and decodes all feature flags per VirtIO 1.2 spec.
+
+**Deliverable**: Complete, tested probe program demonstrating successful Modern VirtIO initialization on Pegasos2/QEMU.
+
+**Key finding — platform MMIO incompatibility**:
+
+Thorough investigation revealed that the two supported QEMU PPC machines have fundamentally different PCI bridge architectures:
+
+| Machine | Bridge | Memory BAR MMIO |
+|---------|--------|-----------------|
+| QEMU amigaone | Mai Logic Articia S (floating buffer) | ✗ Not forwarded to PCI |
+| QEMU pegasos2 | Marvell MV64361 (transparent) | ✓ Direct CPU↔PCI window |
+
+**AmigaOne investigation (all approaches failed)**:
+- `InByte`/`OutByte` on memory BAR address → zero (PCI byte cycle issued but floating buffer doesn't respond)
+- `InLong`/`InWord` → always zero (not even I/O cycles for MMIO addresses)
+- `SetEndian(LITTLE_ENDIAN)` → no effect on MMIO (I/O port only)
+- `IMMU->RemapMemory()` → mapping created but reads still 0 (MMU can't change bridge behavior)
+- `mtspr`/`mfspr` on BAT SPRs 542/543 → **machine check exception** — AmigaOS 4.x kernel intentionally traps all BAT register access from guest code, even in supervisor mode. Forbid()+SuperState() does not help; crash occurs at the SPR instruction itself
+- BBoot DBAT3 setup (scouting fix) → correct assembly generated, but AmigaOS kernel overwrites all BATs during boot; fix does not survive to driver execution time
+
+**Pegasos2 success** (full VirtIO 1.0 init confirmed):
+- Device: 1AF4:1048 at 00:02.0
+- Capabilities: NOTIFY_CFG (BAR4+0x3000), DEVICE_CFG (BAR4+0x2000), ISR_CFG (BAR4+0x1000), COMMON_CFG (BAR4+0x0)
+- MMIO access via `stwbrx`/`lwbrx` (LE byte-reversed load/store) — canonical AmigaOS 4.1 PPC MMIO pattern
+- Status handshake: 0x00 → 0x03 (ACK+DRIVER) → 0x0B (FEATURES_OK) → 0x0F (DRIVER_OK)
+- Device features decoded: `0x30000006`/`0x00000101` = INDIRECT_DESC + EVENT_IDX + HOTPLUG + CHANGE + VERSION_1 + RING_RESET
+- `num_queues = 3` readable from device config
+- Note: `VIRTIO_SCSI_F_INOUT` (bit 0) not advertised by QEMU — per spec 5.6.6.1.1 this limits commands to unidirectional only (no simultaneous IN+OUT buffers)
+
+**Additional AmigaOS MMIO finding**:
+`InWord`/`InLong`/`OutWord`/`OutLong` silently return 0 for memory BAR addresses. Only `InByte`/`OutByte` issue real PCI memory cycles on AmigaOS 4.1 FE. Multi-byte MMIO access requires byte-assembly helpers (mmio_r16/mmio_r32/mmio_w16/mmio_w32) defined in `include/virtio/virtio_pci_modern.h`.
+
+**test_modern.c features**:
+- Generic VirtIO device detection (any 1AF4:xxxx vendor)
+- Full PCI capability chain walk with cfg_type decode
+- Device-aware feature decoding for: SCSI, Block, Network, GPU, 9P, IOMMU
+- Reserved feature decoding per VirtIO 1.2 spec section 6
+- Intelligent feature acceptance (accepts offered features, always negotiates VERSION_1)
+- Portable across device types (device_type auto-detected from PCI device ID)
+
+**Conclusion**: Modern VirtIO (device ID 0x1048) works on Pegasos2. AmigaOne requires legacy/transitional device (0x1004). The v1.5 driver will support both via runtime detection.
+
+**Files added/modified**: `tests/test_modern.c` (new), `tests/Makefile` (updated), `include/virtio/virtio_pci_modern.h` (new), `include/version.h` (1071)
+
+---
+
 ## v1.4 Correctness and Robustness
 
 ### Build 1070: Increase MAX_INFLIGHT from 8 to 16

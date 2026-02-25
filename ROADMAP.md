@@ -213,6 +213,47 @@ Several files contained a single `return 0` statement. Two SCSI files were ident
 
 ---
 
+## Phase 10: v1.5 — Modern VirtIO 1.0 Support
+**Priority: High | Risk: Medium | Effort: Medium**
+
+### Context
+
+v1.4 (build 1070) uses VirtIO legacy PCI transport: I/O BAR (device ID 0x1004).
+Modern VirtIO (device ID 0x1048, `VIRTIO_F_VERSION_1`) uses MMIO BARs with PCI
+capability chains and a LE vring layout.
+
+### Platform Compatibility
+
+Investigation (Feb 2026) confirmed:
+- **Pegasos2 (MV64361)**: Full transparent MMIO bridge → Modern VirtIO works
+- **AmigaOne (Articia S)**: Floating buffer bridge, no transparent CPU↔PCI memory window → Modern MMIO returns 0, cannot be worked around in software
+
+**MMIO access method** (Pegasos2): `stwbrx`/`lwbrx` inline assembly with `mbar`
+barrier. `InWord`/`InLong` silently return 0 for memory BARs on AmigaOS 4.1 FE.
+Only `InByte`/`OutByte` work; multi-byte access requires byte-assembly helpers.
+
+### Status
+
+| Build | Item | Status |
+|-------|------|--------|
+| 1071 | `test_modern.c` probe program — fully validates Modern VirtIO init on Pegasos2 | **Complete** (2026-02-25) |
+| 1072 | Auto-detection in driver (`DetectModernVirtIO`), log-only | Pending |
+| 1073 | Modern init sequence + LE vring wrappers + ISR dispatch | Pending |
+| 1074 | Guards, cleanup, final version bump, release | Pending |
+
+### Key Design Decisions (already validated)
+- `test_modern.c` uses `stwbrx`/`lwbrx` macros — these are the canonical MMIO instructions
+- Feature negotiation confirmed: driver accepts full offered set (0x30000006/0x00000001)
+- Status handshake confirmed: 0x00→0x03→0x0B→0x0F works end-to-end on QEMU Pegasos2
+- `VIRTIO_SCSI_F_INOUT` not offered by QEMU — **this does not affect normal disk I/O**. READ(10)/WRITE(10)/READ CAPACITY/INQUIRY are all unidirectional; INOUT is only needed for bidirectional SCSI commands that have simultaneous data-in AND data-out phases (rare, non-disk). The earlier concern was a misreading of VirtIO spec 5.6.6.1.1.
+- `test_modern` scans for any `1AF4:xxxx` — may find RNG (0x1044) or other device first; driver init must use `FDT_DeviceID, 0x1048`
+- For AmigaOne: continue using legacy device (0x1004) + I/O port interface
+
+### Files
+See `docs/v1.5_implementation_plan.md` for the detailed build plan.
+
+---
+
 ## Progress Tracking
 
 | Phase | Description | Status | Date |
@@ -226,3 +267,4 @@ Several files contained a single `return 0` statement. Two SCSI files were ident
 | 7 | Performance optimisations | Complete | 2026-02-23 |
 | 8 | MSI-X support | Pending | |
 | 9 | Event queue / hot-plug | Pending | |
+| 10 | Modern VirtIO 1.0 (v1.5) | In Progress | 2026-02-25 |
