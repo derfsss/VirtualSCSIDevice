@@ -45,41 +45,71 @@
 /*
  * MMIO access helpers for Modern VirtIO Common Configuration.
  *
- * Testing shows that on AmigaOS 4.1 / QEMU, pciDev->InWord() and InLong()
- * return 0 for MMIO (memory BAR) addresses — only InByte()/OutByte() work
- * correctly for MMIO.  All multi-byte register accesses must be assembled
- * from individual byte reads/writes in little-endian order.
+ * PCI accessor methods (InByte/InLong etc.) do NOT work for MMIO BAR
+ * addresses on either AmigaOne (Articia S) or Pegasos2 (MV64361).
+ * Direct CPU load/store via stwbrx/lwbrx (PPC byte-reversed) is the
+ * only method that works on Pegasos2.  These macros were validated by
+ * test_modern.c in build 1071.
  *
- * Usage: pass pciDev pointer and the absolute physical register address.
+ * stwbrx/lwbrx perform atomic LE↔BE conversion in hardware.
+ * stb/lbz are used for 8-bit registers (STATUS, config_generation).
+ * mbar after writes ensures the PCI bridge sees the store before the
+ * next instruction.
+ *
+ * The addr parameter is the physical BAR address (e.g. 0x84200000 + offset).
+ * On Pegasos2 the MV64361 transparently maps PCI BAR physical addresses
+ * into the CPU address space — direct pointer dereference works.
+ *
+ * The pciDev parameter is accepted but unused — kept for call-site compat.
  */
 #include <interfaces/expansion.h>
 
-static inline uint16 mmio_r16(struct PCIDevice *d, uint32 addr)
+static inline uint8 mmio_r8(struct PCIDevice *d, uint32 addr)
 {
-    return (uint16)d->InByte(addr) |
-           ((uint16)d->InByte(addr + 1) << 8);
+    (void)d;
+    volatile uint8 *a = (volatile uint8 *)addr;
+    uint8 r;
+    __asm__ volatile("lbz %0,0(%1)" : "=r"(r) : "r"(a) : "memory");
+    return r;
 }
 
-static inline uint32 mmio_r32(struct PCIDevice *d, uint32 addr)
+static inline void mmio_w8(struct PCIDevice *d, uint32 addr, uint8 v)
 {
-    return (uint32)d->InByte(addr)       |
-           ((uint32)d->InByte(addr + 1) << 8)  |
-           ((uint32)d->InByte(addr + 2) << 16) |
-           ((uint32)d->InByte(addr + 3) << 24);
+    (void)d;
+    volatile uint8 *a = (volatile uint8 *)addr;
+    __asm__ volatile("stb %1,0(%0); mbar" : : "r"(a), "r"(v) : "memory");
+}
+
+static inline uint16 mmio_r16(struct PCIDevice *d, uint32 addr)
+{
+    (void)d;
+    volatile uint16 *a = (volatile uint16 *)addr;
+    uint16 r;
+    __asm__ volatile("lhbrx %0,0,%1" : "=r"(r) : "r"(a) : "memory");
+    return r;
 }
 
 static inline void mmio_w16(struct PCIDevice *d, uint32 addr, uint16 v)
 {
-    d->OutByte(addr,     (uint8)(v));
-    d->OutByte(addr + 1, (uint8)(v >> 8));
+    (void)d;
+    volatile uint16 *a = (volatile uint16 *)addr;
+    __asm__ volatile("sthbrx %1,0,%0; mbar" : : "r"(a), "r"(v) : "memory");
+}
+
+static inline uint32 mmio_r32(struct PCIDevice *d, uint32 addr)
+{
+    (void)d;
+    volatile uint32 *a = (volatile uint32 *)addr;
+    uint32 r;
+    __asm__ volatile("lwbrx %0,0,%1" : "=r"(r) : "r"(a) : "memory");
+    return r;
 }
 
 static inline void mmio_w32(struct PCIDevice *d, uint32 addr, uint32 v)
 {
-    d->OutByte(addr,     (uint8)(v));
-    d->OutByte(addr + 1, (uint8)(v >> 8));
-    d->OutByte(addr + 2, (uint8)(v >> 16));
-    d->OutByte(addr + 3, (uint8)(v >> 24));
+    (void)d;
+    volatile uint32 *a = (volatile uint32 *)addr;
+    __asm__ volatile("stwbrx %1,0,%0; mbar" : : "r"(a), "r"(v) : "memory");
 }
 
 /*

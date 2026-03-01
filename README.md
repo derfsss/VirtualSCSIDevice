@@ -1,8 +1,10 @@
 # virtioscsi.device
 
-An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU/KVM virtual machines.
+An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU virtual machines.
 
 > **This driver was developed with [Claude AI](https://claude.ai) (Anthropic) acting as the primary engineer — writing all C code, designing the architecture, debugging hardware-level issues, and navigating the AmigaOS 4.1 SDK. It stands as a practical demonstration of AI-assisted low-level systems programming on a niche, legacy platform with minimal training data.**
+>
+> **[Kyvos](https://ko-fi.com/s/6476fdadd2) was used to develop and test this device driver.**
 
 ---
 
@@ -10,13 +12,15 @@ An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU/KVM vir
 
 `virtioscsi.device` exposes QEMU VirtIO SCSI virtual disks to AmigaOS 4.1 FE as standard trackdisk-compatible block devices. Once installed, AmigaOS treats them like any other hard disk: partitions are automatically discovered and mounted at boot, and filesystems (FFS2, SFS, etc.) work normally.
 
-This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the AmigaOne machine type. VirtIO SCSI disks are faster and more flexible than emulated IDE, and this driver gives AmigaOS full access to them.
+This driver supports both QEMU machine types:
+- **AmigaOne** — uses VirtIO Legacy PCI (device 0x1004) via I/O port access
+- **Pegasos2** — uses VirtIO 1.0 Modern PCI (device 0x1048) via MMIO with `stwbrx`/`lwbrx` inline assembly
 
 ---
 
 ## Features
 
-- **VirtIO Legacy PCI** — works with QEMU's `-device virtio-scsi-pci` (Vendor 0x1AF4, Device 0x1004)
+- **Dual VirtIO transport** — Legacy PCI (AmigaOne) and Modern VirtIO 1.0 (Pegasos2), auto-detected at boot
 - **Interrupt-driven I/O** — uses PCI INTx interrupts; no CPU-burning polling loops
 - **Async I/O** — per-unit exec task with message port; `BeginIO` returns immediately for slow commands
 - **Multi-disk** — discovers up to 8 SCSI targets at boot, each announced to `mounter.library`
@@ -37,44 +41,71 @@ This driver is useful when running AmigaOS 4.1 FE inside QEMU/KVM using the Amig
 ## Requirements
 
 - AmigaOS 4.1 Final Edition (PowerPC)
-- QEMU/KVM configured with `-device virtio-scsi-pci` and one or more `-drive` attachments
+- QEMU with one of the supported machine types (`amigaone` or `pegasos2`)
 
-### Example QEMU command line
+---
 
-```sh
-qemu-system-ppc \
-  -M amigaone \
-  -device virtio-scsi-pci,id=scsi0 \
-  -drive file=amigaos.img,if=none,id=hd0 \
-  -device scsi-hd,drive=hd0,bus=scsi0.0
+## QEMU Setup
+
+Add the following to your existing QEMU command line to attach VirtIO SCSI disks.
+
+### AmigaOne (`-M amigaone`)
+
+AmigaOne uses the legacy/transitional VirtIO device (`virtio-scsi-pci`):
+
 ```
+-device virtio-scsi-pci,id=scsi0 \
+-drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
+-device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
+-drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
+-device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
+```
+
+### Pegasos2 (`-M pegasos2`)
+
+Pegasos2 requires the non-transitional (modern-only) VirtIO device (`virtio-scsi-pci-non-transitional`):
+
+```
+-device virtio-scsi-pci-non-transitional,id=scsi0 \
+-drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
+-device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
+-drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
+-device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
+```
+
+Replace `virtioscsi1.img` and `virtioscsi2.img` with your own hard drive image files. You can attach fewer or more drives by adjusting the `-drive`/`-device scsi-hd` pairs (up to 8 targets).
 
 ---
 
 ## Installation
 
-### Option 1 — Copy to DEVS: (standard)
+### Using BBoot (Kickstart zip archive)
 
-1. Copy `virtioscsi.device` to `DEVS:` on your AmigaOS system.
-2. Reboot.
-3. The driver loads automatically via `RTF_AUTOINIT` at startup and announces all discovered disks to `mounter.library`.
+[BBoot](https://codeberg.org/qmiga/bboot/) boots AmigaOS from a zip archive containing all Kickstart modules. To add `virtioscsi.device`:
 
-### Option 2 — Kickstart module (KickLayout)
-
-Adding the driver as a Kickstart resident means it is available very early in the boot sequence, before any filesystem is mounted. This is useful if your boot disk is a VirtIO SCSI disk.
-
-1. Copy `virtioscsi.device` to your KickLayout directory (e.g. `BOOT:Kickstart/` or wherever your Kickstart module set is stored).
-2. Add an entry to your `KickLayout` file:
+1. Add `virtioscsi.device` to the `Kickstart/` folder inside your BBoot zip archive.
+2. Edit the `Kicklayout` file inside the zip archive and add the following line after the existing boot device driver entry (e.g. after `MODULE Kickstart/a1ide.device.kmod` for AmigaOne, or after `MODULE Kickstart/peg2ide.device.kmod` for Pegasos2):
 
 ```
-KICKMODULE DEVS:virtioscsi.device
+MODULE Kickstart/virtioscsi.device
 ```
 
-   Or, if using the Kickstart tool directly, add the file to the module list in the Kickstart preferences.
+3. Save the zip archive and boot with BBoot as normal.
+
+### Without BBoot (SYS:Kickstart folder)
+
+If you are not using BBoot and have AmigaOS installed on a bootable disk:
+
+1. Copy `virtioscsi.device` to the `SYS:Kickstart/` folder on your AmigaOS system disk.
+2. Edit the `SYS:Kickstart/Kicklayout` file and add the following line after the existing boot device driver entry (e.g. after `MODULE Kickstart/a1ide.device.kmod` for AmigaOne, or after `MODULE Kickstart/peg2ide.device.kmod` for Pegasos2):
+
+```
+MODULE Kickstart/virtioscsi.device
+```
 
 3. Save and reboot. The driver will be resident in memory from the very start of the boot process.
 
-> **Note:** The driver has a resident priority of -60 so it initialises after `mounter.library`. If used as a Kickstart module, ensure `mounter.library` is also present in the Kickstart set.
+> **Note:** The driver has a resident priority of -60 so it initialises after `mounter.library`. Ensure `mounter.library` is also present in your Kickstart module set.
 
 ---
 
@@ -131,19 +162,25 @@ src/
   exec_cmds/            — CMD_READ, CMD_WRITE, TD_GETGEOMETRY, TD_IO64, etc.
   scsi_cmds/            — SCSI INQUIRY, READ CAPACITY, READ/WRITE(10), etc.
   ns_cmds/              — NSD NSCMD_DEVICEQUERY, NSCMD_TD_GETGEOMETRY64, etc.
-  pci/                  — PCI bus enumeration, BAR mapping
+  pci/                  — PCI bus enumeration, BAR mapping, modern cap detection
   virtio/               — VirtIO queue management, IRQ handler, SCSI I/O engine
 include/
   virtioscsi.h          — library base and unit structs
   version.h             — version/revision/build defines
-  virtio/               — VirtIO protocol headers
+  virtio/               — VirtIO protocol headers, MMIO helpers
 tests/
   test_virtioscsi.c     — stress test (concurrent I/O, geometry, 64-bit offsets)
+  test_modern.c         — VirtIO 1.0 Modern device probe (Pegasos2 validation)
 ```
 
 ---
 
 ## Changelog
+
+### v1.5 build 1079 — 2026-02-28
+- **Pegasos2 support**: VirtIO 1.0 Modern PCI transport (device 0x1048) with MMIO via `stwbrx`/`lwbrx` inline assembly. Auto-detected at boot alongside legacy transport (device 0x1004) for AmigaOne.
+- **Modern VirtIO init**: PCI capability chain walk detects COMMON/NOTIFY/ISR/DEVICE config regions. Full VirtIO 1.0 status handshake (Reset→ACK→DRIVER→FEATURES_OK→DRIVER_OK). Three-address queue setup (DESC/AVAIL/USED). Per-queue notify via MMIO. LE vring byte-swap wrappers for all descriptor/ring field accesses.
+- **Bug fixes**: PCI Memory Space and Bus Master enable before MMIO access; NULL-safe BAR0 dereference in modern mode; modern-aware queue notify in DoIO path; reset polling after device reset.
 
 ### v1.4 build 1070 — 2026-02-24
 - **Performance**: `MAX_INFLIGHT` increased from 8 to 16. Each unit task can now sustain 16 simultaneous in-flight block I/O requests, doubling the pipeline depth and improving sequential throughput under burst loads.

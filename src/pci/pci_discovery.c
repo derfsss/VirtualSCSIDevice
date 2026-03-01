@@ -13,10 +13,14 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         return FALSE;
     }
 
-    DPRINTF(IExec, "[virtioscsi] PCI_Discovery: Scanning for VirtIO SCSI controller (0x1AF4/0x1004)...\n");
+    DPRINTF(IExec, "[virtioscsi] PCI_Discovery: Scanning for VirtIO SCSI controller...\n");
 
-    /* Search for the VirtIO SCSI controller by PCI vendor:device ID */
-    device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1004, TAG_DONE);
+    /* Try modern VirtIO 1.0 SCSI first (0x1048), then legacy transitional (0x1004) */
+    device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1048, TAG_DONE);
+
+    if (!device) {
+        device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1004, TAG_DONE);
+    }
 
     if (!device) {
         DPRINTF(IExec, "[virtioscsi] PCI_Discovery: No VirtIO SCSI controller found.\n");
@@ -55,10 +59,17 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      * IPCI->FreeDevice() here. BAR mappings must remain valid for the
      * driver's lifetime; they are released in _manager_Expunge().
      *
-     * Walk the PCI capability list to detect modern VirtIO and populate
-     * the cfg_base fields used by InitVirtIOSCSI_Modern().
+     * Only run modern VirtIO detection for non-transitional devices (0x1048).
+     * Transitional 0x1004 devices expose vendor-specific PCI capabilities but
+     * on AmigaOne the MMIO BAR reads all return 0 (Articia S hardware limit),
+     * so modern_mode must stay FALSE to use the working legacy I/O path.
      */
-    DetectModernVirtIO(libBase);
+    if (devid == 0x1048) {
+        DetectModernVirtIO(libBase);
+    } else {
+        DPRINTF(IExec, "[virtioscsi:pci_discovery.c] Legacy device 0x%04X — skipping modern detection.\n",
+                (unsigned int)devid);
+    }
 
     return TRUE;
 }

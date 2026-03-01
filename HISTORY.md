@@ -181,6 +181,32 @@ Thorough investigation revealed that the two supported QEMU PPC machines have fu
 
 **Files added/modified**: `tests/test_modern.c` (new), `tests/Makefile` (updated), `include/virtio/virtio_pci_modern.h` (new), `include/version.h` (1071)
 
+### Build 1072-1075: Modern VirtIO Auto-Detection + Full Init (February 2026)
+
+- **Build 1072**: `DetectModernVirtIO()` walks PCI vendor-specific capability chain (type 0x09) to detect COMMON_CFG, NOTIFY_CFG, ISR_CFG, DEVICE_CFG regions. Populates `libBase->common_cfg_base`, `notify_cfg_base`, `isr_cfg_base`, `device_cfg_base`, `notify_off_mult`. Sets `modern_mode = TRUE` if COMMON_CFG found. Called from `DiscoverVirtIOSCSI()` after device found.
+- **Build 1073**: Full modern VirtIO 1.0 init sequence (`InitVirtIOSCSI_Modern()`). Feature negotiation via `mmio_r32`/`mmio_w32` byte-assembly MMIO helpers (InByte-based, portable to both platforms). FEATURES_OK handshake. Three-address queue setup (DESC/AVAIL/USED low+high). Per-queue notify address from `notify_cfg_base + Q_NOFF * notify_off_mult`. LE vring wrappers (`vr16`/`vr32`/`vr64` via `__builtin_bswap*`) applied to all vring field accesses in `AddBuf`/`GetBuf`. Modern kick via `mmio_w16` to `vq->notify_addr`. ISR dispatch reads `isr_cfg_base` in modern mode, `BAR0 + VIRTIO_PCI_ISR` in legacy. Cleanup path resets via `common_cfg_base + STATUS` (modern) or `BAR0 + STATUS` (legacy).
+- **Build 1075**: Gitignore updates. Debug logging tidied.
+
+### Build 1076: PCI Discovery — Modern Device ID Priority (February 2026)
+
+- **Problem**: `DiscoverVirtIOSCSI()` only searched for legacy/transitional device ID `0x1004`. On Pegasos2, QEMU exposes a modern non-transitional VirtIO SCSI device at `0x1048`. The driver found the `0x1004` device but the legacy I/O port init path returned zero features and zero-sized queues because the MV64361 bridge handles MMIO transparently but legacy I/O access differs.
+- **Fix**: PCI discovery now searches for modern `0x1048` first, then falls back to legacy `0x1004`. Combined with `DetectModernVirtIO()` cap walk, the driver now auto-selects the correct init path on both platforms:
+  - **Pegasos2**: Finds `1AF4:1048`, detects modern caps, uses `InitVirtIOSCSI_Modern()` with MMIO
+  - **AmigaOne**: No `0x1048` device exists, finds `1AF4:1004`, no modern caps, uses legacy I/O init
+- **Files changed**: `src/pci/pci_discovery.c`, `include/version.h` (bump to 1076)
+
+### Builds 1077-1079: Modern VirtIO Bug Fixes — Pegasos2 Bring-Up (February 2026)
+
+Three bugs found and fixed during Pegasos2 hardware testing of the modern VirtIO init path:
+
+- **Build 1077**: MMIO helpers replaced with `stwbrx`/`lwbrx`/`lhbrx`/`sthbrx`/`stb`/`lbz` inline assembly macros in `virtio_pci_modern.h`. The previous `InByte`-based byte-assembly approach does not work for MMIO BAR addresses on Pegasos2 (MV64361 transparent bridge requires direct CPU load/store, not PCI accessor methods). Also replaced all remaining `pciDev->InByte`/`OutByte` calls in `InitVirtIOSCSI_Modern`, the ISR handler, and the cleanup path with `mmio_r8`/`mmio_w8`. Added `BaseAddress` (CPU-visible) vs `Physical` (PCI bus) address selection in `DetectModernVirtIO` — on Pegasos2 these happen to be identical, but `BaseAddress` is the correct field per the API. Added reset polling loop after STATUS=0 write to match test_modern.c.
+- **Build 1078**: **Root cause of zero features on Pegasos2** — the driver never enabled `PCI_COMMAND_MEMORY` and `PCI_COMMAND_MASTER` in the PCI Command register before MMIO access. Without Memory Space enabled, the PCI bridge ignores all MMIO transactions (reads return 0, writes dropped). Added `WriteConfigWord(PCI_COMMAND, ...)` and `SetCapabilities(PCI_CAP_BUSMASTER)` at the top of `InitVirtIOSCSI_Modern()`. After this fix: features read correctly (`0x30000006`/`0x00000101`), FEATURES_OK accepted (Status=0x0B→0x0F), all 3 queues enabled.
+- **Build 1079**: **DSI crash after successful modern init** — `VirtIOSCSI_DoIO()` unconditionally dereferenced `libBase->bar0->Physical` at function entry to compute `iobase`. In modern mode (non-transitional device 0x1048), `bar0` is NULL (no I/O BAR). The compiler eagerly loaded the field before the modern-mode dispatch could skip it, causing a NULL pointer dereference (DAR=0x00000016). Also, DoIO had a hardcoded `pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY)` that bypassed `VirtQueue_Kick()` and would fail in modern mode. Fixed both: `iobase` now guarded with `bar0 ? ... : 0`, and the notify replaced with `VirtQueue_Kick()` which handles both modern (mmio_w16) and legacy (OutWord) paths.
+
+**Result**: Driver passes testing on both QEMU amigaone (legacy 0x1004) and QEMU pegasos2 (modern 0x1048) in both debug and release builds.
+
+**Files changed**: `include/virtio/virtio_pci_modern.h`, `src/pci/pci_modern_detect.c`, `src/pci/pci_discovery.c`, `src/virtio/virtio_init.c`, `src/virtio/virtio_irq.c`, `src/virtio/virtio_scsi_io.c`, `include/version.h` (1077→1079)
+
 ---
 
 ## v1.4 Correctness and Robustness

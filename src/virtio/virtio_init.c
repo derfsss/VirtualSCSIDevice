@@ -32,14 +32,16 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         return FALSE;
     }
 
+    /* Dispatch to the appropriate init path.
+     * Modern devices (0x1048) may have no BAR0 — they use MMIO via BAR4.
+     * Check modern_mode before requiring BAR0. */
+    if (libBase->modern_mode)
+        return InitVirtIOSCSI_Modern(libBase);
+
     if (!libBase->bar0) {
         DPRINTF(IExec, "[virtioscsi] InitVirtIO: BAR0 not available.\n");
         return FALSE;
     }
-
-    /* Dispatch to the appropriate init path */
-    if (libBase->modern_mode)
-        return InitVirtIOSCSI_Modern(libBase);
 
     /* BAR0 base is the I/O port base address */
     uint32 iobase = (uint32)libBase->bar0->Physical;
@@ -214,26 +216,55 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
 
     DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: common_cfg=0x%08lX\n", base);
 
-    /* All subsequent In/Out operations via pciDev use little-endian byte order. */
-    pciDev->SetEndian(PCI_MODE_LITTLE_ENDIAN);
-
-    /* Step 1: Reset */
-    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS, 0x00);
-
-    /* Step 2: ACKNOWLEDGE */
-    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-
-    /* Step 3: DRIVER */
-    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS,
-                    VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+    /*
+     * Enable PCI Memory Space access and Bus Master before any MMIO.
+     * Without this, all MMIO reads return 0 and writes are silently lost.
+     * test_modern.c does this and works; the driver was missing it.
+     */
+    {
+        uint16 pci_cmd = pciDev->ReadConfigWord(PCI_COMMAND);
+        if (!(pci_cmd & (PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER))) {
+            pciDev->WriteConfigWord(PCI_COMMAND, pci_cmd | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+            DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Enabled PCI Memory+BusMaster (was 0x%04lX)\n",
+                    (uint32)pci_cmd);
+        }
+        uint32 caps = pciDev->GetCapabilities();
+        if (!(caps & PCI_CAP_BUSMASTER)) {
+            pciDev->SetCapabilities(PCI_CAP_BUSMASTER | PCI_CAP_SETCLR);
+            DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Set AmigaOS BusMaster capability\n");
+        }
+    }
 
     /*
-     * Step 4: Feature negotiation.
-     *
-     * MMIO note: InWord/InLong return 0 on this platform for memory BARs.
-     * Only InByte/OutByte work for MMIO.  All multi-byte register access
-     * uses the mmio_r16/mmio_r32/mmio_w16/mmio_w32 byte-assembly helpers.
+     * All MMIO access uses stwbrx/lwbrx/stb/lbz inline asm macros
+     * (mmio_r8/w8/r16/w16/r32/w32).  PCI accessor methods (InByte etc.)
+     * do NOT work for MMIO BAR addresses on Pegasos2.
      */
+
+    /* Step 1: Reset — write 0 then poll until device acknowledges */
+    mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x00);
+    {
+        uint32 tries = 0;
+        uint8 rst;
+        do {
+            rst = mmio_r8(pciDev, base + VIRTIO_PCI_COMMON_STATUS);
+            tries++;
+        } while (rst != 0 && tries < 1000);
+
+        if (rst != 0) {
+            DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Reset did not complete (status=0x%02X)\n",
+                    (uint32)rst);
+        }
+    }
+
+    /* Step 2: ACKNOWLEDGE */
+    mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
+
+    /* Step 3: DRIVER */
+    mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS,
+            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+    /* Step 4: Feature negotiation. */
     mmio_w32(pciDev, base + VIRTIO_PCI_COMMON_DFSELECT, 0);
     uint32 dev_feat_lo = mmio_r32(pciDev, base + VIRTIO_PCI_COMMON_DF);
 
@@ -262,15 +293,15 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
     BOOL use_event_idx = (drv_feat_lo & (1UL << 29)) != 0;
 
     /* Step 5: Set FEATURES_OK */
-    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS,
-                    VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
+    mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS,
+            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
 
     /* Step 6: Verify FEATURES_OK is still set — device may reject features */
-    uint8 status_check = pciDev->InByte(base + VIRTIO_PCI_COMMON_STATUS);
+    uint8 status_check = mmio_r8(pciDev, base + VIRTIO_PCI_COMMON_STATUS);
     if (!(status_check & VIRTIO_STATUS_FEATURES_OK)) {
         DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: FEATURES_OK rejected! Status=0x%02X\n",
                 (uint32)status_check);
-        pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_FAILED);
+        mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_FAILED);
         return FALSE;
     }
     DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: FEATURES_OK accepted. Status=0x%02X\n",
@@ -366,11 +397,11 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
     }
 
     /* Step 8: Set DRIVER_OK */
-    pciDev->OutByte(base + VIRTIO_PCI_COMMON_STATUS,
-                    VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
-                    VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+    mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS,
+            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
+            VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
 
-    uint8 final_status = pciDev->InByte(base + VIRTIO_PCI_COMMON_STATUS);
+    uint8 final_status = mmio_r8(pciDev, base + VIRTIO_PCI_COMMON_STATUS);
     DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: Complete. Status=0x%02X\n",
             (uint32)final_status);
 
@@ -385,8 +416,7 @@ void CleanupVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     if (pciDev) {
         /* Reset the device to stop all DMA */
         if (libBase->modern_mode && libBase->common_cfg_base) {
-            pciDev->SetEndian(PCI_MODE_LITTLE_ENDIAN);
-            pciDev->OutByte(libBase->common_cfg_base + VIRTIO_PCI_COMMON_STATUS, 0x00);
+            mmio_w8(pciDev, libBase->common_cfg_base + VIRTIO_PCI_COMMON_STATUS, 0x00);
         } else if (libBase->bar0) {
             uint32 iobase = (uint32)libBase->bar0->Physical;
             pciDev->OutByte(iobase + VIRTIO_PCI_STATUS, 0x00);

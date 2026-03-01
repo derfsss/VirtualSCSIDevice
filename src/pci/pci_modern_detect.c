@@ -56,39 +56,46 @@ BOOL DetectModernVirtIO(struct VirtIOSCSIBase *libBase)
             continue;
         }
 
+        /*
+         * Use BaseAddress (CPU-visible mapped address), NOT Physical (PCI bus address).
+         * On Pegasos2 (MV64361) these differ: Physical is the PCI-side address while
+         * BaseAddress is where the CPU can actually reach the MMIO region.  Using
+         * Physical causes all MMIO reads to return 0 and writes to be silently lost.
+         */
+        uint32 addr = bar->BaseAddress + offset;
         uint32 phys = bar->Physical + offset;
 
         switch (cfg_type) {
         case VIRTIO_PCI_CAP_COMMON_CFG:
-            libBase->common_cfg_base = phys;
+            libBase->common_cfg_base = addr;
             libBase->modern_mode = TRUE;
             DPRINTF(IExec,
-                    "[virtioscsi:pci_modern_detect.c] COMMON_CFG  BAR%u+0x%lX -> phys=0x%08lX\n",
-                    (uint32)bar_num, offset, phys);
+                    "[virtioscsi:pci_modern_detect.c] COMMON_CFG  BAR%u+0x%lX -> base=0x%08lX phys=0x%08lX\n",
+                    (uint32)bar_num, offset, addr, phys);
             break;
 
         case VIRTIO_PCI_CAP_NOTIFY_CFG:
-            libBase->notify_cfg_base = phys;
+            libBase->notify_cfg_base = addr;
             /* Read the notify_off_multiplier (4 bytes at cap+16) */
             libBase->notify_off_mult = pciDev->ReadConfigLong(
                 cap->CapOffset + VIRTIO_CAP_OFF_NOTIFY_MULT);
             DPRINTF(IExec,
-                    "[virtioscsi:pci_modern_detect.c] NOTIFY_CFG  BAR%u+0x%lX -> phys=0x%08lX mult=%lu\n",
-                    (uint32)bar_num, offset, phys, libBase->notify_off_mult);
+                    "[virtioscsi:pci_modern_detect.c] NOTIFY_CFG  BAR%u+0x%lX -> base=0x%08lX phys=0x%08lX mult=%lu\n",
+                    (uint32)bar_num, offset, addr, phys, libBase->notify_off_mult);
             break;
 
         case VIRTIO_PCI_CAP_ISR_CFG:
-            libBase->isr_cfg_base = phys;
+            libBase->isr_cfg_base = addr;
             DPRINTF(IExec,
-                    "[virtioscsi:pci_modern_detect.c] ISR_CFG     BAR%u+0x%lX -> phys=0x%08lX\n",
-                    (uint32)bar_num, offset, phys);
+                    "[virtioscsi:pci_modern_detect.c] ISR_CFG     BAR%u+0x%lX -> base=0x%08lX phys=0x%08lX\n",
+                    (uint32)bar_num, offset, addr, phys);
             break;
 
         case VIRTIO_PCI_CAP_DEVICE_CFG:
-            libBase->device_cfg_base = phys;
+            libBase->device_cfg_base = addr;
             DPRINTF(IExec,
-                    "[virtioscsi:pci_modern_detect.c] DEVICE_CFG  BAR%u+0x%lX -> phys=0x%08lX\n",
-                    (uint32)bar_num, offset, phys);
+                    "[virtioscsi:pci_modern_detect.c] DEVICE_CFG  BAR%u+0x%lX -> base=0x%08lX phys=0x%08lX\n",
+                    (uint32)bar_num, offset, addr, phys);
             break;
 
         default:

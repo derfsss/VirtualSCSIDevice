@@ -125,7 +125,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
     struct ExecIFace *IExec = libBase->IExec;
     struct PCIDevice *pciDev = libBase->pciDevice;
     struct virtqueue *vq = libBase->vqs[2]; /* requestq */
-    uint32 iobase = (uint32)libBase->bar0->Physical;
+    uint32 iobase = libBase->bar0 ? (uint32)libBase->bar0->Physical : 0;
 
     if (!vq || !pciDev) {
         DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: No requestq or PCI device\n");
@@ -306,8 +306,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
          * blocks forever. The extra unconditional PCI write is negligible for
          * these rare synchronous commands (geometry, SCSI passthrough).
          */
-        __asm__ volatile("sync" ::: "memory");
-        pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_NOTIFY, (uint16)vq->index);
+        VirtQueue_Kick(IExec, vq, pciDev, iobase);
         IExec->ReleaseSemaphore(&libBase->io_lock);
 
         /* Wait for completion — interrupt-driven or polling fallback */
@@ -772,7 +771,7 @@ void VirtIOSCSI_Kick(struct VirtIOSCSIBase *libBase)
     struct ExecIFace *IExec = libBase->IExec;
     struct PCIDevice *pciDev = libBase->pciDevice;
     struct virtqueue *vq = libBase->vqs[2];
-    uint32 iobase = (uint32)libBase->bar0->Physical;
+    uint32 iobase = libBase->bar0 ? (uint32)libBase->bar0->Physical : 0;
 
     if (!vq || !pciDev)
         return;

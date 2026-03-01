@@ -1,4 +1,5 @@
 #include "virtio/virtio_irq.h"
+#include "virtio/virtio_pci_modern.h"
 #include "virtio/virtio_scsi.h"
 #include "virtioscsi.h"
 
@@ -38,7 +39,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
      */
     uint8 isr;
     if (base->modern_mode) {
-        isr = pciDev->InByte(base->isr_cfg_base);
+        isr = mmio_r8(pciDev, base->isr_cfg_base);
     } else {
         uint32 iobase = (uint32)base->bar0->Physical;
         isr = pciDev->InByte(iobase + VIRTIO_PCI_ISR);
