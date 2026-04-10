@@ -1,7 +1,7 @@
 CC = ppc-amigaos-gcc
-CFLAGS = -O2 -Wall -Wextra -Wshadow -Wformat=2 -I./include -fno-tree-loop-distribute-patterns -ffunction-sections -fdata-sections
+CFLAGS = -O2 -Wall -Wextra -Wshadow -Wformat=2 -I./include -fno-tree-loop-distribute-patterns
 DEPFLAGS = -MMD -MP
-LDFLAGS = -nostartfiles -Wl,--gc-sections
+LDFLAGS = -nostartfiles
 
 DOCKER_IMAGE = walkero/amigagccondocker:os4-gcc11
 DOCKER_RUN   = docker run --rm -v "$(shell pwd):/work" -w /work $(DOCKER_IMAGE)
@@ -63,9 +63,8 @@ dist: all
 	mkdir -p $(DIST_DIR)/$(DIST_NAME)/Tests
 	@# Device driver
 	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/
-	@# Install script + icon
+	@# Install script
 	cp Autoinstall                    $(DIST_DIR)/$(DIST_NAME)/
-	cp Autoinstall.info               $(DIST_DIR)/$(DIST_NAME)/
 	@# Documentation
 	cp README_os4depot.txt            $(DIST_DIR)/$(DIST_NAME)/
 	@# Test programs
