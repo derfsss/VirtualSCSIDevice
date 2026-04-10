@@ -12,15 +12,15 @@ An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU virtual
 
 `virtioscsi.device` exposes QEMU VirtIO SCSI virtual disks to AmigaOS 4.1 FE as standard trackdisk-compatible block devices. Once installed, AmigaOS treats them like any other hard disk: partitions are automatically discovered and mounted at boot, and filesystems (FFS2, SFS, etc.) work normally.
 
-This driver supports both QEMU machine types:
-- **AmigaOne** — uses VirtIO Legacy PCI (device 0x1004) via I/O port access
-- **Pegasos2** — uses VirtIO 1.0 Modern PCI (device 0x1048) via MMIO with `stwbrx`/`lwbrx` inline assembly
+The driver auto-detects the best VirtIO transport for each QEMU machine type — no platform-specific QEMU configuration required:
+- **Pegasos2** (MV64361 bridge) — modern VirtIO 1.0 MMIO via `stwbrx`/`lwbrx` inline assembly
+- **AmigaOne** (Articia S bridge) — legacy VirtIO I/O port access
 
 ---
 
 ## Features
 
-- **Dual VirtIO transport** — Legacy PCI (AmigaOne) and Modern VirtIO 1.0 (Pegasos2), auto-detected at boot
+- **Dual VirtIO transport** — Legacy PCI and Modern VirtIO 1.0, auto-detected at boot via MMIO probe (Pegasos2 gets modern, AmigaOne gets legacy, same QEMU config for both)
 - **Interrupt-driven I/O** — uses PCI INTx interrupts; no CPU-burning polling loops
 - **Async I/O** — per-unit exec task with message port; `BeginIO` returns immediately for slow commands
 - **Multi-disk** — discovers up to 8 SCSI targets at boot, each announced to `mounter.library`
@@ -47,11 +47,7 @@ This driver supports both QEMU machine types:
 
 ## QEMU Setup
 
-Add the following to your existing QEMU command line to attach VirtIO SCSI disks.
-
-### AmigaOne (`-M amigaone`)
-
-AmigaOne uses the legacy/transitional VirtIO device (`virtio-scsi-pci`):
+Add the following to your existing QEMU command line to attach VirtIO SCSI disks. The same device type (`virtio-scsi-pci`) works on all supported QEMU machines — the driver auto-detects the best transport at boot:
 
 ```
 -device virtio-scsi-pci,id=scsi0 \
@@ -61,19 +57,9 @@ AmigaOne uses the legacy/transitional VirtIO device (`virtio-scsi-pci`):
 -device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
 ```
 
-### Pegasos2 (`-M pegasos2`)
-
-Pegasos2 requires the non-transitional (modern-only) VirtIO device (`virtio-scsi-pci-non-transitional`):
-
-```
--device virtio-scsi-pci-non-transitional,id=scsi0 \
--drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
--device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
--drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
--device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
-```
-
 Replace `virtioscsi1.img` and `virtioscsi2.img` with your own hard drive image files. You can attach fewer or more drives by adjusting the `-drive`/`-device scsi-hd` pairs (up to 8 targets).
+
+> **Note:** Existing Pegasos2 setups using `-device virtio-scsi-pci-non-transitional` continue to work. The transitional device (`virtio-scsi-pci`) is recommended because it works on all machines without changes.
 
 ---
 
@@ -138,6 +124,22 @@ docker run --rm -v $(pwd):/src -w /src walkero/amigagccondocker:os4-gcc11 make C
 
 With `DEBUG` defined, the driver emits detailed serial/debug output via `IExec->DebugPrintF()` for every I/O operation, PCI discovery step, and VirtIO queue event.
 
+### Distribution
+
+```bash
+# Create dist/VirtualSCSIDevice/ directory with driver, installer, docs, and tests:
+docker run --rm -v $(pwd):/src -w /src walkero/amigagccondocker:os4-gcc11 make dist
+
+# Create LHA archive for distribution (dist/VirtualSCSIDevice.lha):
+docker run --rm -v $(pwd):/src -w /src walkero/amigagccondocker:os4-gcc11 make dist-lha
+```
+
+The distribution contains:
+- `virtioscsi.device` — the compiled driver
+- `Autoinstall` — AmigaDOS install script (copies driver to `SYS:Kickstart/`)
+- `README_os4depot.txt` — documentation
+- `Tests/` — test programs (`test_virtioscsi`, `test_modern`, `test_inquiry`)
+
 ### Clean
 
 ```bash
@@ -166,7 +168,7 @@ src/
   virtio/               — VirtIO queue management, IRQ handler, SCSI I/O engine
 include/
   virtioscsi.h          — library base and unit structs
-  version.h             — version/revision/build defines
+  version.h             — version/revision defines
   virtio/               — VirtIO protocol headers, MMIO helpers
 tests/
   test_virtioscsi.c     — stress test (concurrent I/O, geometry, 64-bit offsets)
@@ -177,103 +179,34 @@ tests/
 
 ## Changelog
 
-### v1.5 build 1079 — 2026-02-28
+### v1.7 — 2026-03-18
+- **Performance**: Bounce buffer increased from 4KB to 64KB — eliminates DMA syscalls (StartDMA/AllocSysObject/GetDMAList/EndDMA/FreeSysObject) for virtually all filesystem I/O. Word-aligned bounce copy (~4x faster data movement). Pre-allocated DMA entry arrays for >64KB transfers.
+- **Performance**: O(1) inflight slot allocation via free-list (replaces linear O(16) scan). O(1) Harvest cookie matching via slot index in req_cmd->id. Global occupied counter for interrupt coalescing (replaces 128-slot scan).
+
+### v1.6 — 2026-03-18
+- **Code review fixes**: Sub-block I/O requests (io_Length < block_size) now correctly rejected with `IOERR_BADLENGTH` in CMD_READ/CMD_WRITE instead of silently rounding up to 1 block. Fixed redundant semaphore release/re-acquire in DoIO cross-unit cookie stash path. Fixed integer overflow in test_inquiry capacity calculation for >4GB disks.
+- **Build system**: Added automatic header dependency tracking (`-MMD -MP`). Added `test_inquiry` to default build targets. Added stricter compiler warnings (`-Wextra`, `-Wshadow`, `-Wformat=2`).
+- **Cleanup**: Replaced non-ASCII emoji in test_modern debug output. Added named constant `SAM2_SINGLE_LEVEL_LUN` for magic 0x40 in LUN encoding. Fixed inconsistent header guard in virtio_scsi.h. Removed build number from version string (standard AmigaOS major.minor format).
+
+### v1.5 — 2026-02-28
 - **Pegasos2 support**: VirtIO 1.0 Modern PCI transport (device 0x1048) with MMIO via `stwbrx`/`lwbrx` inline assembly. Auto-detected at boot alongside legacy transport (device 0x1004) for AmigaOne.
 - **Modern VirtIO init**: PCI capability chain walk detects COMMON/NOTIFY/ISR/DEVICE config regions. Full VirtIO 1.0 status handshake (Reset→ACK→DRIVER→FEATURES_OK→DRIVER_OK). Three-address queue setup (DESC/AVAIL/USED). Per-queue notify via MMIO. LE vring byte-swap wrappers for all descriptor/ring field accesses.
 - **Bug fixes**: PCI Memory Space and Bus Master enable before MMIO access; NULL-safe BAR0 dereference in modern mode; modern-aware queue notify in DoIO path; reset polling after device reset.
 
-### v1.4 build 1070 — 2026-02-24
-- **Performance**: `MAX_INFLIGHT` increased from 8 to 16. Each unit task can now sustain 16 simultaneous in-flight block I/O requests, doubling the pipeline depth and improving sequential throughput under burst loads.
+### v1.4 — 2026-02-24
+- **Performance**: `MAX_INFLIGHT` increased from 8 to 16 for higher pipeline depth.
+- **Compatibility**: SCSI INQUIRY VPD pages (0x00, 0x80, 0x83) answered locally. ATA PASS-THROUGH stub for S.M.A.R.T. tool support.
+- **Correctness**: SCSI sense key decoded and mapped to specific AmigaOS io_Error codes. READ CAPACITY (16) fallback for disks ≥ 2TB. `total_blocks` now `uint64`.
 
-### v1.4 build 1069 — 2026-02-24
-- **Compatibility**: SCSI INQUIRY VPD pages implemented. EVPD requests for page 0x00 (Supported Pages), 0x80 (Unit Serial Number — `"VIRTIOSCSI-T%lu"`), and 0x83 (Device Identification) are now answered locally rather than forwarded to VirtIO where they may fail. Unsupported VPD page codes return CHECK CONDITION ILLEGAL REQUEST.
+### v1.3 — 2026-02-22
+- **Interrupt-driven I/O**: PCI INTx interrupt handler replaces polling. Per-unit exec task with message port for async I/O.
+- **Performance**: Pre-allocated DMA buffers, bounce buffer ring, deferred kick batching, interrupt coalescing via `used_event`, pipelined block I/O (up to 16 in-flight), `VIRTIO_F_INDIRECT_DESC`, READ(16)/WRITE(16) for >2TB.
+- **Stability**: Cross-unit VirtIO completion harvest, `io_lock` serialisation for shared VQ2, DoIO cookie stash for release-build race conditions.
+- **Build**: Release mode by default. `-fno-tree-loop-distribute-patterns` for GCC 11 compatibility.
 
-### v1.4 build 1068 — 2026-02-24
-- **Correctness**: SCSI sense key decoded and mapped to specific AmigaOS io_Error codes: `TDERR_WriteProt` (DATA PROTECT), `TDERR_DiskChanged` (UNIT ATTENTION), `TDERR_BadSecHdr` (MEDIUM ERROR), `TDERR_BadDriveType` (NOT READY/HARDWARE ERROR), `IOERR_NOCMD` (ILLEGAL REQUEST). Previously all errors reported `HFERR_BadStatus`.
-- **Correctness**: `TD_GETDRIVETYPE` handler in `cmd_stubs.c` documented — `DRIVE_NEWSTYLE` (0x44) is the correct value signalling 64-bit + NSD support.
-
-### v1.4 build 1067 — 2026-02-24
-- **Correctness**: READ CAPACITY (16) fallback for disks ≥ 2TB. `ensure_geometry_cached()` now issues READ CAPACITY (10) first; if the returned last LBA is `0xFFFFFFFF`, follows up with READ CAPACITY (16) (opcode 0x9E, service action 0x10) to get the true 64-bit block count. `total_blocks` is now `uint64`. `dg_TotalSectors` in `TD_GETGEOMETRY` response clamped to `0xFFFFFFFF` for disks over 2TB.
-- **Version**: bumped to v1.4 (DEVICE_REVISION 3 → 4).
-
-### v1.3 build 1065 — 2026-02-24
-- **Compatibility**: ATA PASS-THROUGH stub (opcodes 0x85 / 0xA1) for S.M.A.R.T. tool support. SMART applications on AmigaOS 4 send ATA PASS-THROUGH commands via `HD_SCSICMD` (SAT layer) to retrieve ATA SMART data. Since VirtIO SCSI is not an ATA device, there is no real ATA layer to query — the driver now returns a synthetic 512-byte ATA SMART Read Data block with plausible health attributes (all green, temperature=30°C, power-on hours=1) instead of `HFERR_BadStatus` (io_Error 45). Handles both the 16-byte (0x85, primary) and 12-byte (0xA1, fallback for older drivers) pass-through variants.
-
-### v1.3 build 1064 — 2026-02-24
-- **Release build**: Removed `-DDEBUG` from Makefile default CFLAGS. Release is now the default; debug builds available via `make CFLAGS="... -DDEBUG"`.
-
-### v1.3 build 1063 — 2026-02-24
-- **Performance**: Interrupt coalescing via `used_event` batching. Two-layer design: `VirtQueue_GetBuf()` baseline writes `used_event = last_used_idx` on every call (keeps polling→IRQ handoff safe). `VirtIOSCSI_Harvest()` overrides with `last_used_idx + (occupied-1)` when ≥2 inflight slots are occupied, coalescing N pipeline completions into 1 ISR per burst. Under peak pipeline load (8 in-flight) this reduces ISR frequency 8× vs. the previous per-completion interrupt. Idle pipeline: baseline fires on the very next completion — no added latency.
-
-### v1.3 build 1062 — 2026-02-24
-- **Performance**: Bounce buffer ring — zero-overhead I/O for transfers ≤4096 bytes. One 4096-byte `MEMF_SHARED` buffer per inflight slot, permanently DMA-mapped at unit open. `VirtIOSCSI_Submit()` detects transfers within the bounce size and uses the pre-pinned buffer directly, eliminating `StartDMA`/`EndDMA` on every small-block read or write. Read data is copied bounce→user in `VirtIOSCSI_Harvest()` before `ReplyMsg`. Large transfers (>4096 bytes) use the direct DMA path unchanged.
-
-### v1.3 build 1061 — 2026-02-24
-- **Performance**: Deferred kick — batch `QUEUE_NOTIFY` for burst I/O. `VirtIOSCSI_Submit()` no longer calls `VirtQueue_Kick()` per request. The unit task's dispatch loop drains the entire message port queue first, then calls `VirtIOSCSI_Kick()` once. N queued requests → 1 PCI write instead of N. Single-request workloads are unchanged.
-
-### v1.3 build 1060 — 2026-02-24
-- **Bug fix (release-build Heisenbug)**: `VirtIOSCSI_Harvest()` was discarding DoIO cookies — when Harvest won the GetBuf race against a concurrent `VirtIOSCSI_DoIO()` on the other unit, the cookie appeared unmatched (DoIO cookies are not registered in `inflight[]`) and was silently dropped. DoIO then timed out after 50 retries, causing its filesystem to fail to mount. Fix: added `doio_pending_cookie`/`doio_pending_written` fields to `VirtIOUSCSIDevUnit`. Harvest identifies DoIO cookies by matching `unit->req_buf`, stashes them under `io_lock`, and signals the unit; DoIO's drain loop checks this stash first each iteration.
-
-### v1.3 build 1059 — 2026-02-23
-- **Bug fix (release-build Heisenbug)**: The inner `GetBuf` drain loop in `VirtIOSCSI_DoIO()` was missing a `break` after finding its own completion cookie. Without it, the loop continued calling `GetBuf` and could dequeue the other unit's pipeline completion — but then mishandled the lock state, silently dropping the IORequest. In debug builds this race was suppressed by the timing overhead of `DPRINTF` calls; in release builds it reliably caused the second drive (DH8/FastFileSystem) to fail to mount. Fix: add `break` immediately after `cookie = c`. Both drives now appear correctly in release builds.
-
-### v1.3 build 1058 — 2026-02-23
-- **Stability fix**: Cross-unit VirtIO completion harvest. When unit 0's `VirtIOSCSI_Harvest()` dequeues a completion cookie belonging to unit 1's pipeline `inflight[]` slot (or vice versa), it now searches `libBase->units[]` globally to find the true owner and replies the IORequest correctly. Previously these completions were silently dropped, causing one drive's filesystem to hang permanently and only one drive to appear on Workbench.
-- Both drives (SmartFilesystem DH7, FastFileSystem DH8) now appear and operate correctly on Workbench.
-
-### v1.3 build 1057 — 2026-02-23
-- **Stability fix**: Serialise all `VirtQueue_GetBuf()` calls with `io_lock`. Both unit tasks share VQ2 and the ISR wakes both on any completion. Without the lock, two concurrent `GetBuf()` calls race on `last_used_idx`, each seeing the other's cookie as unmatched and dropping the IORequest permanently. The lock is held around `GetBuf` only; released before `ReplyMsg`, re-acquired at the bottom of the loop.
-
-### v1.3 build 1055 — 2026-02-23
-- **Stability fix**: Disabled `VIRTIO_F_EVENT_IDX` kick suppression permanently. QEMU legacy VirtIO never writes `avail_event` into the used ring — the field stays 0 forever, causing all kicks after the first to be suppressed by the `(1 < 1)` condition. `VirtQueue_Kick` now always sends unconditional `QUEUE_NOTIFY`. The interrupt-suppression half of EVENT_IDX (driver writes `used_event` after each `GetBuf`) is retained and working.
-
-### v1.3 build 1047 — 2026-02-23
-- Performance: pipelined block I/O — up to 8 simultaneous VirtIO SCSI requests per unit (`MAX_INFLIGHT=8`). Block I/O commands (CMD_READ, CMD_WRITE, TD_READ64, TD_WRITE64, NSCMD variants) are submitted asynchronously via `VirtIOSCSI_Submit()` and replied by `VirtIOSCSI_Harvest()` on ISR signal. HD_SCSICMD and geometry commands remain synchronous.
-- Performance: per-unit ISR signal is now persistent (allocated once at unit task startup, not per-request). The interrupt handler signals the unit task on any VirtIO completion without per-call setup overhead.
-- Pre-allocated DMA buffers extended from 1 to 8 per-unit slots (one per inflight request). Slot 0 is aliased for the synchronous DoIO path for backwards compatibility.
-- Fallback to synchronous DoIO when all inflight slots are full (ensures forward progress under high concurrency without queueing complexity).
-
-### v1.3 build 1046 — 2026-02-23
-- Performance: READ(16)/WRITE(16) support for disks >2TB. The 64-bit I/O paths (TD_READ64, TD_WRITE64, NSCMD variants) now use READ(16)/WRITE(16) CDBs when the computed LBA exceeds 0xFFFFFFFF, allowing correct access to images larger than ~2.1TB at 512B sectors.
-
-### v1.3 build 1045 — 2026-02-23
-- Performance: VIRTIO_F_INDIRECT_DESC (bit 28) negotiated and implemented. A single vring descriptor now points to a MEMF_SHARED indirect table containing the full scatter-gather chain, eliminating the MAX_SG_ENTRIES=64 limit on transfer size.
-
-### v1.3 build 1044 — 2026-02-23
-- Performance: VIRTIO_F_EVENT_IDX (bit 29) re-enabled and fixed. Root cause of the previous kick-suppression bug was `last_kick_avail_idx` initialised to 0, causing the second kick's suppression check to always fire. Fixed by initialising to 0xFFFF so the first comparison always passes until the device writes a real avail_event value.
-
-### v1.3 build 1043 — 2026-02-23
-- Performance: response buffer reset reduced from 108-byte volatile loop to 3 targeted volatile stores (only `response`, `status`, `residual` need resetting between retries; remaining fields are written by device or never read in practice).
-- Performance: `MAX_SG_ENTRIES` increased from 32 to 64, raising the maximum DMA scatter-gather transfer from ~96KB to ~240KB at 4KB page granularity.
-- Performance: polling fallback reduced from 5,000,000 to 500,000 iterations — the interrupt path handles all normal I/O; the polling path is only a safety net during discovery or if `AllocSignal` fails.
-
-### v1.3 build 1042 — 2026-02-23
-- Fixed VIRTIO_F_EVENT_IDX kick-suppression bug: avail_event is zero at init time, causing all I/O after the first request to be silently dropped. EVENT_IDX disabled until the basic I/O path is proven stable.
-- Release build (DEBUG disabled by default).
-
-### v1.3 build 1041 — 2026-02-23
-- Interrupt-driven I/O (Phase 5): replaced 5M-iteration polling loop with PCI INTx interrupt handler via `pciDevice->MapInterrupt()` + `IExec->AddIntServer()`. Falls back to polling if interrupt installation fails.
-- Async I/O (Phase 6): per-unit exec task with message port. `BeginIO` posts slow commands and returns immediately; the unit task executes them and calls `ReplyMsg`. `AbortIO` removes pending requests from the port queue.
-- Performance (Phase 7): pre-allocated per-unit `MEMF_SHARED` req/resp DMA buffers — no per-request allocation or DMA setup on the I/O hot path. `zero_shared()` volatile word loop for non-cacheable buffer zeroing (safe alternative to `ClearMem`/`SetMem` on `MEMF_SHARED`).
-- Replaced deprecated `CachePreDMA`/`CachePostDMA` with `StartDMA`/`GetDMAList`/`EndDMA` throughout.
-- Added `-fno-tree-loop-distribute-patterns` to Makefile: prevents GCC 11 `-O2` from replacing fill loops with `memset()` calls (newlib not linked in device drivers).
-- Added VIRTIO_F_EVENT_IDX negotiation in virtio_init.c (later disabled — see build 1042).
-
-### v1.3 build 1033 — 2026-02-22
-- CDB helpers (Phase 1): `make_read10_cdb()`, `make_write10_cdb()`, `unpack_io64_offset()`, `ensure_geometry_cached()` — eliminated copy-paste across 6 files. Block size now read from device (4K sector support).
-- Stub consolidation (Phase 2): merged `cmd_td_changestate.c`, `cmd_td_protstatus.c`, `cmd_td_getdrivetype.c`, `cmd_success.c` into `cmd_stubs.c`; merged `scsi_read_10.c` + `scsi_write_10.c` into `scsi_rw_10.c`.
-- Init split (Phase 3): extracted SCSI INQUIRY scan and mounter announcement into `unit_discovery.c`.
-- BeginIO cleanup (Phase 4): extracted `GetCommandName()` and `supported_commands[]` into `cmd_names.c`; `ns_devicequery.c` references the shared table.
-
-### v1.2 build 1029 — 2026-02-21
-- Multi-unit automounting: INQUIRY scan of up to 8 targets at Init, announced to `mounter.library`.
-- Resolved Workbench boot hang: removed manual `AddDevice()`, rely on `RTF_AUTOINIT`.
-- I/O semaphore (`io_lock`) protecting VirtIO queue submit window against concurrent access.
-- `TD_GETDRIVETYPE` returns `DRIVE_NEWSTYLE` for correct 64-bit geometry handling.
-- `TD_GETNUMTRACKS` fallback of 32768 prevents "empty drive" errors before geometry is cached.
-- Migrated DMA API: `CachePreDMA` → `StartDMA`/`GetDMAList`/`EndDMA` (scatter-gather).
-- Full 64-bit command coverage: `TD_READ64`, `TD_WRITE64`, all `ETD_*` and `NSCMD_ETD_*` variants.
-- `CMD_UPDATE`/`CMD_FLUSH` wired to SCSI `SYNCHRONIZE CACHE(10)`.
+### v1.2 — 2026-02-21
+- Multi-unit automounting via `mounter.library`. Boot hang fix. I/O semaphore.
+- Full 64-bit command coverage. Modern DMA API (`StartDMA`/`GetDMAList`/`EndDMA`).
 
 ### v1.0 — 2026-02-20
 - Initial working driver: PCI discovery, VirtIO legacy init, real SCSI I/O (INQUIRY, READ CAPACITY, READ(10), WRITE(10)).

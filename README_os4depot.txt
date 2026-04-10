@@ -1,6 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 1.5 (Build 1079) - 28 February 2026
+Version 1.7 - 18 March 2026
 Author: derfsss
 Source: https://github.com/derfsss/VirtualSCSIDevice
 
@@ -23,10 +23,11 @@ virtioscsi.device is a device driver for AmigaOS 4.1 Final Edition that
 gives the operating system access to VirtIO SCSI virtual disks in QEMU
 virtual machines.
 
-This driver supports both QEMU machine types:
+The driver auto-detects the best VirtIO transport for each QEMU machine
+type - no platform-specific QEMU configuration required:
 
-  AmigaOne  - uses VirtIO Legacy PCI (device 0x1004) via I/O port access
-  Pegasos2  - uses VirtIO 1.0 Modern PCI (device 0x1048) via MMIO
+  Pegasos2  (MV64361 bridge)  - modern VirtIO 1.0 MMIO
+  AmigaOne  (Articia S bridge) - legacy VirtIO I/O port access
 
 The correct transport is auto-detected at boot. VirtIO SCSI disks are
 faster and more flexible than emulated IDE, and this driver makes them
@@ -44,24 +45,10 @@ REQUIREMENTS
 QEMU SETUP
 ----------
 Add the following to your existing QEMU command line to attach VirtIO
-SCSI disks.
-
-AmigaOne (-M amigaone):
-
-  AmigaOne uses the legacy/transitional VirtIO device (virtio-scsi-pci):
+SCSI disks. The same device type (virtio-scsi-pci) works on all
+supported QEMU machines - the driver auto-detects the best transport:
 
   -device virtio-scsi-pci,id=scsi0 \
-  -drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
-  -device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
-  -drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
-  -device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
-
-Pegasos2 (-M pegasos2):
-
-  Pegasos2 requires the non-transitional (modern-only) VirtIO device
-  (virtio-scsi-pci-non-transitional):
-
-  -device virtio-scsi-pci-non-transitional,id=scsi0 \
   -drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
   -device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
   -drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
@@ -71,10 +58,16 @@ Replace virtioscsi1.img and virtioscsi2.img with your own hard drive
 image files. You can attach fewer or more drives by adjusting the
 -drive/-device scsi-hd pairs (up to 8 targets).
 
+Note: Existing Pegasos2 setups using
+-device virtio-scsi-pci-non-transitional continue to work. The
+transitional device (virtio-scsi-pci) is recommended because it works
+on all machines without changes.
+
 
 FEATURES
 --------
-- Dual VirtIO transport: Legacy PCI (AmigaOne) and Modern 1.0 (Pegasos2)
+- Dual VirtIO transport: auto-detected via MMIO probe (modern on Pegasos2,
+  legacy on AmigaOne, same QEMU config for both)
 - Interrupt-driven I/O - no CPU-burning polling loops
 - Asynchronous I/O - per-unit exec task with message port
 - Discovers up to 8 SCSI targets at boot
@@ -93,6 +86,17 @@ FEATURES
 
 INSTALLATION
 ------------
+
+Automatic (from AmigaOS Shell):
+
+  1. Extract the archive and open a Shell in the VirtualSCSIDevice
+     directory.
+  2. Run:  Execute Autoinstall
+  3. The script copies virtioscsi.device to SYS:Kickstart/.
+  4. Follow the on-screen instructions to add the MODULE line to
+     your Kicklayout file, then reboot.
+
+Manual installation:
 
 Using BBoot (Kickstart zip archive):
 
@@ -154,7 +158,22 @@ Source code: https://github.com/derfsss/VirtualSCSIDevice
 CHANGELOG
 ---------
 
-v1.5 build 1079 (28.02.2026)
+v1.7 (18.03.2026)
+  - Performance: bounce buffer increased 4KB to 64KB, eliminating DMA
+    syscalls for most filesystem I/O. Word-aligned bounce copy (~4x).
+    Pre-allocated DMA entry arrays. O(1) inflight slot allocation and
+    cookie matching. Global occupied counter for interrupt coalescing.
+
+v1.6 (18.03.2026)
+  - Code review fixes: sub-block I/O rejected with IOERR_BADLENGTH,
+    redundant semaphore dance in DoIO cross-unit path simplified,
+    integer overflow in test capacity calculation fixed.
+  - Build system: automatic header dependency tracking, test_inquiry
+    added to default targets, stricter compiler warnings.
+  - Cleanup: non-ASCII emoji replaced, SAM-2 LUN magic constant named,
+    header guard naming fixed, build number removed from version string.
+
+v1.5 (28.02.2026)
   - Pegasos2 support: VirtIO 1.0 Modern PCI transport (device 0x1048)
     with MMIO via stwbrx/lwbrx inline assembly. Auto-detected at boot
     alongside legacy transport (device 0x1004) for AmigaOne.
@@ -165,61 +184,20 @@ v1.5 build 1079 (28.02.2026)
     NULL-safe BAR0 dereference in modern mode; modern-aware queue notify
     in DoIO path; reset polling after device reset.
 
-v1.4 build 1070 (24.02.2026)
+v1.4 (24.02.2026)
   - MAX_INFLIGHT increased from 8 to 16 for higher pipeline depth.
-
-v1.4 build 1069 (24.02.2026)
   - SCSI INQUIRY VPD pages (0x00, 0x80, 0x83) answered locally.
-
-v1.4 build 1068 (24.02.2026)
   - SCSI sense key mapped to specific AmigaOS io_Error codes.
-
-v1.4 build 1067 (24.02.2026)
-  - READ CAPACITY (16) fallback for disks >= 2TB. Version bumped to v1.4.
-
-v1.3 build 1065 (24.02.2026)
+  - READ CAPACITY (16) fallback for disks >= 2TB.
   - ATA PASS-THROUGH stub for SMART tool compatibility.
 
-v1.3 build 1063 (24.02.2026)
-  - Interrupt coalescing via used_event batching.
-
-v1.3 build 1062 (24.02.2026)
-  - Bounce buffer ring for zero-overhead small I/O.
-
-v1.3 build 1061 (24.02.2026)
-  - Deferred kick: batch QUEUE_NOTIFY for burst I/O.
-
-v1.3 build 1060 (24.02.2026)
-  - Bug fix: Harvest discarding DoIO cookies (release-build Heisenbug).
-
-v1.3 build 1059 (23.02.2026)
-  - Bug fix: DoIO inner-loop missing break (release-build Heisenbug).
-
-v1.3 build 1058 (23.02.2026)
-  - Cross-unit VirtIO completion harvest. Both drives now appear.
-
-v1.3 build 1057 (23.02.2026)
-  - Serialised VirtQueue_GetBuf() with io_lock for shared VQ2.
-
-v1.3 build 1055 (23.02.2026)
-  - Disabled EVENT_IDX kick suppression (QEMU legacy never writes
-    avail_event). Unconditional QUEUE_NOTIFY on every kick.
-
-v1.3 build 1047 (23.02.2026)
-  - Pipelined block I/O with up to 8 simultaneous in-flight requests.
-  - Persistent per-unit ISR signal. Pre-allocated DMA slots.
-
-v1.3 build 1042 (23.02.2026)
-  - Fixed EVENT_IDX kick-suppression bug. Release build.
-
-v1.3 build 1041 (23.02.2026)
+v1.3 (22.02.2026)
   - Interrupt-driven I/O, async I/O with per-unit exec task.
-  - Pre-allocated DMA buffers. Modern DMA API throughout.
+  - Performance: pre-allocated DMA buffers, bounce buffer ring,
+    deferred kick batching, interrupt coalescing, pipelined block I/O.
+  - Stability: cross-unit completion harvest, io_lock serialisation.
 
-v1.3 build 1033 (22.02.2026)
-  - CDB helpers, stub consolidation, init split, BeginIO cleanup.
-
-v1.2 build 1029 (21.02.2026)
+v1.2 (21.02.2026)
   - Multi-disk automounting, boot hang fix, I/O semaphore.
   - Full 64-bit command coverage. Modern DMA API.
 

@@ -3,6 +3,7 @@
 #include "virtioscsi_cmds.h"
 #include "scsi_cdb_helpers.h"
 #include "virtio/virtio_scsi_io.h"
+#include "virtio/virtqueue.h"
 #include <exec/exec.h>
 #include <exec/exectags.h>
 #include <exec/memory.h>
@@ -163,7 +164,18 @@ static BOOL alloc_one_bounce(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit 
     IExec->GetDMAList(unit->bounce_bufs[s], BOUNCE_BUF_SIZE, DMA_ReadFromRAM, tmp);
     unit->bounce_dma_phys[s] = (uint32)tmp[0].PhysicalAddress;
     IExec->FreeSysObject(ASOT_DMAENTRY, tmp);
-    /* DMA mapping stays live — EndDMA called in free_one_bounce */
+
+    /*
+     * Release the DMA mapping immediately — the physical address is cached
+     * in bounce_dma_phys[s].  EndDMA with DMAF_NoModify restores the buffer
+     * to normal cacheable state, allowing CopyMem to operate at L1/L2 speed.
+     * Cache coherency is handled explicitly in Submit (CacheClearE CACRF_ClearD
+     * flushes dirty lines to RAM before device reads) and Harvest (CacheClearE
+     * CACRF_InvalidateD invalidates stale lines before CPU reads device data).
+     */
+    IExec->EndDMA(unit->bounce_bufs[s], BOUNCE_BUF_SIZE, DMA_ReadFromRAM | DMAF_NoModify);
+    unit->bounce_dma_entries[s] = 0;
+
     return TRUE;
 }
 
@@ -187,12 +199,22 @@ static BOOL preallocate_unit_dma(struct VirtIOSCSIBase *libBase,
     struct ExecIFace *IExec = libBase->IExec;
     uint32 s;
 
+    /* Initialise inflight free list: all slots free, linked 0→1→...→15→-1 */
+    for (s = 0; s < MAX_INFLIGHT - 1; s++)
+        unit->inflight_next[s] = (int32)(s + 1);
+    unit->inflight_next[MAX_INFLIGHT - 1] = -1;
+    unit->free_head = 0;
+
     for (s = 0; s < MAX_INFLIGHT; s++) {
         if (!alloc_one_slot(IExec, unit, s)) {
             DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: slot %lu alloc failed\n", s);
             /* Free already-allocated slots */
             uint32 k;
             for (k = 0; k < s; k++) {
+                if (unit->data_dma_pool[k]) {
+                    IExec->FreeSysObject(ASOT_DMAENTRY, unit->data_dma_pool[k]);
+                    unit->data_dma_pool[k] = NULL;
+                }
                 free_one_bounce(IExec, unit, k);
                 free_one_slot(IExec, unit, k);
             }
@@ -203,6 +225,28 @@ static BOOL preallocate_unit_dma(struct VirtIOSCSIBase *libBase,
             free_one_slot(IExec, unit, s);
             uint32 k;
             for (k = 0; k < s; k++) {
+                if (unit->data_dma_pool[k]) {
+                    IExec->FreeSysObject(ASOT_DMAENTRY, unit->data_dma_pool[k]);
+                    unit->data_dma_pool[k] = NULL;
+                }
+                free_one_bounce(IExec, unit, k);
+                free_one_slot(IExec, unit, k);
+            }
+            return FALSE;
+        }
+        /* Allocate DMA entry pool for direct-DMA path (>BOUNCE_BUF_SIZE transfers) */
+        unit->data_dma_pool[s] = (struct DMAEntry *)IExec->AllocSysObjectTags(
+            ASOT_DMAENTRY, ASODMAE_NumEntries, MAX_SG_ENTRIES, TAG_DONE);
+        if (!unit->data_dma_pool[s]) {
+            DPRINTF(IExec, "[virtioscsi:unit_task.c] preallocate_unit_dma: DMA pool slot %lu alloc failed\n", s);
+            free_one_bounce(IExec, unit, s);
+            free_one_slot(IExec, unit, s);
+            uint32 k;
+            for (k = 0; k < s; k++) {
+                if (unit->data_dma_pool[k]) {
+                    IExec->FreeSysObject(ASOT_DMAENTRY, unit->data_dma_pool[k]);
+                    unit->data_dma_pool[k] = NULL;
+                }
                 free_one_bounce(IExec, unit, k);
                 free_one_slot(IExec, unit, k);
             }
@@ -230,6 +274,10 @@ static void free_unit_dma(struct VirtIOSCSIBase *libBase,
     uint32 s;
 
     for (s = 0; s < MAX_INFLIGHT; s++) {
+        if (unit->data_dma_pool[s]) {
+            IExec->FreeSysObject(ASOT_DMAENTRY, unit->data_dma_pool[s]);
+            unit->data_dma_pool[s] = NULL;
+        }
         free_one_bounce(IExec, unit, s);
         free_one_slot(IExec, unit, s);
     }
@@ -241,6 +289,9 @@ static void free_unit_dma(struct VirtIOSCSIBase *libBase,
     unit->dma_req_entries  = 0;
     unit->dma_resp_list    = NULL;
     unit->dma_resp_entries = 0;
+
+    /* Reset free list */
+    unit->free_head = -1;
 
     DPRINTF(IExec, "[virtioscsi:unit_task.c] free_unit_dma: unit %lu DMA freed\n", unit->unit_num);
 }
@@ -352,7 +403,7 @@ void UnitTask_Entry(void)
                 unit->inflight[s].ioreq  = NULL;
                 unit->inflight[s].cookie = NULL;
                 if (unit->inflight[s].dma_list) {
-                    IExec->FreeSysObject(ASOT_DMAENTRY, unit->inflight[s].dma_list);
+                    /* dma_list points into data_dma_pool — do NOT FreeSysObject */
                     IExec->EndDMA(unit->inflight[s].dma_addr, unit->inflight[s].dma_size,
                                   unit->inflight[s].dma_flags | DMAF_NoModify);
                     unit->inflight[s].dma_list        = NULL;

@@ -144,7 +144,7 @@ int main()
         printf("  Total Blocks : %lu\n", blocks);
         printf("  Block Length : %lu bytes\n", block_len);
 
-        uint64 total_bytes = (uint64)(blocks + 1) * block_len;
+        uint64 total_bytes = ((uint64)blocks + 1) * block_len;
         printf("  Total Drive Size: %llu bytes (~%llu MB)\n", total_bytes, total_bytes / (1024 * 1024));
 
     } else {

@@ -15,11 +15,15 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
 
     DPRINTF(IExec, "[virtioscsi] PCI_Discovery: Scanning for VirtIO SCSI controller...\n");
 
-    /* Try modern VirtIO 1.0 SCSI first (0x1048), then legacy transitional (0x1004) */
-    device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1048, TAG_DONE);
+    /* Try transitional VirtIO SCSI first (0x1004), then modern-only (0x1048).
+     * Transitional devices work on ALL QEMU machines: the driver auto-detects
+     * whether to use legacy I/O or modern MMIO based on hardware capability.
+     * Modern-only 0x1048 is kept as fallback for existing Pegasos2 setups
+     * using -device virtio-scsi-pci-non-transitional. */
+    device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1004, TAG_DONE);
 
     if (!device) {
-        device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1004, TAG_DONE);
+        device = IPCI->FindDeviceTags(FDT_VendorID, 0x1AF4, FDT_DeviceID, 0x1048, TAG_DONE);
     }
 
     if (!device) {
@@ -59,17 +63,20 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      * IPCI->FreeDevice() here. BAR mappings must remain valid for the
      * driver's lifetime; they are released in _manager_Expunge().
      *
-     * Only run modern VirtIO detection for non-transitional devices (0x1048).
-     * Transitional 0x1004 devices expose vendor-specific PCI capabilities but
-     * on AmigaOne the MMIO BAR reads all return 0 (Articia S hardware limit),
-     * so modern_mode must stay FALSE to use the working legacy I/O path.
+     * Attempt modern VirtIO detection for ALL device types.
+     *
+     * Transitional devices (0x1004) expose vendor-specific PCI capabilities
+     * for modern mode alongside their legacy I/O interface.  DetectModernVirtIO
+     * walks the capability chain and probes MMIO to verify it actually works
+     * on this platform's PCI bridge:
+     *
+     *   Pegasos2 (MV64361 transparent bridge): MMIO probe passes → modern mode
+     *   AmigaOne (Articia S floating buffer):  MMIO probe fails  → legacy I/O
+     *
+     * Non-transitional devices (0x1048) also go through the probe; if MMIO
+     * works the driver uses modern mode, otherwise init will fail gracefully.
      */
-    if (devid == 0x1048) {
-        DetectModernVirtIO(libBase);
-    } else {
-        DPRINTF(IExec, "[virtioscsi:pci_discovery.c] Legacy device 0x%04X — skipping modern detection.\n",
-                (unsigned int)devid);
-    }
+    DetectModernVirtIO(libBase);
 
     return TRUE;
 }

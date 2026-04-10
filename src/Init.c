@@ -14,7 +14,7 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
     struct VirtIOSCSIBase *devBase = (struct VirtIOSCSIBase *)library;
     struct ExecIFace *iexec = (struct ExecIFace *)exec;
 
-    iexec->DebugPrintF("[virtioscsi] Loading Version: %s\n", VERSION_LOG_STRING);
+    iexec->DebugPrintF("[virtioscsi] Loading Version: %s\n", DEVVERSIONSTRING);
 
     devBase->IExec = iexec;
     devBase->dev_SegList = seglist;

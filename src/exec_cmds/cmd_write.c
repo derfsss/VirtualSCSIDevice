@@ -26,10 +26,13 @@ void Handle_CMD_Write(struct VirtIOSCSIBase *libBase, struct IOStdReq *ioreq)
     struct VirtIOUSCSIDevUnit *unit = (struct VirtIOUSCSIDevUnit *)ioreq->io_Unit;
     uint32 blksz = (unit && unit->geometry_valid && unit->block_size) ? unit->block_size : 512;
 
+    if (length < blksz) {
+        ioreq->io_Error = IOERR_BADLENGTH;
+        return;
+    }
+
     uint32 lba = offset / blksz;
     uint32 blocks = length / blksz;
-    if (blocks == 0)
-        blocks = 1;
 
     DPRINTF(libBase->IExec, "[virtioscsi:cmd_write.c] CMD_WRITE: offset=%lu lba=%lu blocks=%lu len=%lu\n", offset, lba,
             blocks, length);

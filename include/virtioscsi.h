@@ -1,5 +1,5 @@
-#ifndef VIRTIO_SCSI_H
-#define VIRTIO_SCSI_H
+#ifndef VIRTIOSCSI_H
+#define VIRTIOSCSI_H
 
 #include <devices/scsidisk.h>
 #include <devices/trackdisk.h>
@@ -51,6 +51,15 @@ struct VirtIOSCSIBase
 
     /* Phase 5/6: VirtQueue submit lock (held only during AddBuf+Kick, not during Wait) */
     struct SignalSemaphore io_lock;
+
+    /* Phase 12: Global inflight occupancy counter (all units combined).
+     * Used by interrupt coalescing to avoid scanning all units × slots. */
+    uint32 occupied_count;
+
+    /* Bitmask of units with inflight I/O (bit N = unit N has pending requests).
+     * Set in Submit/DoIO, cleared in Harvest when per-unit inflight_count drops to 0.
+     * Read by ISR without lock — benign races (see virtio_irq.c). */
+    uint8  active_units_mask;
 
     /* Phase 5: Interrupt support */
     struct Interrupt irq_handler;   /* Interrupt server node */
@@ -131,10 +140,21 @@ struct VirtIOUSCSIDevUnit
 /*
      * Bounce buffer size threshold.  Transfers at or below this size use a
      * pre-pinned MEMF_SHARED bounce buffer instead of per-call StartDMA/EndDMA.
-     * 4096 covers all 512-byte and 4KB block-size metadata I/O with zero DMA
-     * setup overhead.  Larger transfers use direct user-buffer DMA as before.
+     * 65536 (64KB) covers virtually all AmigaOS filesystem block I/O (SFS, FFS2)
+     * with zero DMA setup overhead.  Larger transfers use direct user-buffer DMA.
+     * Memory cost: 64KB × MAX_INFLIGHT per active unit (~1MB).
      */
-#define BOUNCE_BUF_SIZE 4096
+#define BOUNCE_BUF_SIZE 65536
+
+    /* Phase 12: O(1) free-slot allocation via singly-linked free list.
+     * free_head is the index of the first free slot, or -1 if all occupied.
+     * inflight_next[i] is the next free slot after i, or -1 for end of list. */
+    int32 free_head;
+    int32 inflight_next[MAX_INFLIGHT];
+
+    /* Per-unit count of occupied pipeline inflight slots.
+     * Used to clear active_units_mask bit when this unit drains to zero. */
+    uint32 inflight_count;
 
     struct {
         struct IOStdReq *ioreq;    /* NULL = slot free */
@@ -174,6 +194,14 @@ struct VirtIOUSCSIDevUnit
     uint8   *bounce_bufs[MAX_INFLIGHT];          /* virtual address of bounce buffer */
     uint32   bounce_dma_phys[MAX_INFLIGHT];      /* physical address for SG entry */
     uint32   bounce_dma_entries[MAX_INFLIGHT];   /* StartDMA entry count (kept for EndDMA) */
+
+    /*
+     * Phase 12: Pre-allocated DMA entry arrays for the direct DMA path.
+     * One array per inflight slot, each with MAX_SG_ENTRIES capacity.
+     * Eliminates per-request AllocSysObjectTags/FreeSysObject on the hot path.
+     * Allocated at unit startup, freed at shutdown.
+     */
+    struct DMAEntry *data_dma_pool[MAX_INFLIGHT];
 };
 
 /* Prototypes for _man functions */
@@ -202,4 +230,4 @@ uint32 _manager_Release(struct DeviceManagerInterface *Self);
     } while (0)
 #endif
 
-#endif /* VIRTIO_SCSI_H */
+#endif /* VIRTIOSCSI_H */

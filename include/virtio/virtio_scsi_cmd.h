@@ -26,6 +26,9 @@
 #define VIRTIO_SCSI_S_NEXUS_FAILURE 8
 #define VIRTIO_SCSI_S_FAILURE 9
 
+/* SAM-2 LUN address method: single-level LUN format (byte 2 bits 7:6 = 01b) */
+#define SAM2_SINGLE_LEVEL_LUN 0x40
+
 /* Task attributes */
 #define VIRTIO_SCSI_S_SIMPLE 0
 #define VIRTIO_SCSI_S_ORDERED 1
@@ -68,7 +71,7 @@ static inline void virtio_scsi_set_lun(uint8 lun[8], uint8 target, uint16 lun_id
 {
     lun[0] = 1;
     lun[1] = target;
-    lun[2] = (lun_id >> 8) | 0x40; /* Single-level LUN format */
+    lun[2] = (lun_id >> 8) | SAM2_SINGLE_LEVEL_LUN; /* SAM-2 single-level LUN address method */
     lun[3] = lun_id & 0xFF;
     lun[4] = 0;
     lun[5] = 0;
