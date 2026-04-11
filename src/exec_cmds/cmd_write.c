@@ -19,6 +19,8 @@ void Handle_CMD_Write(struct VirtIOSCSIBase *libBase, struct IOStdReq *ioreq)
     UBYTE *data = (UBYTE *)ioreq->io_Data;
 
     if (!data || length == 0) {
+        DPRINTF(libBase->IExec, "[virtioscsi:cmd_write.c] CMD_WRITE: BADADDRESS data=%p len=%lu\n",
+                (void *)data, length);
         ioreq->io_Error = IOERR_BADADDRESS;
         return;
     }
@@ -27,6 +29,8 @@ void Handle_CMD_Write(struct VirtIOSCSIBase *libBase, struct IOStdReq *ioreq)
     uint32 blksz = (unit && unit->geometry_valid && unit->block_size) ? unit->block_size : 512;
 
     if (length < blksz) {
+        DPRINTF(libBase->IExec, "[virtioscsi:cmd_write.c] CMD_WRITE: BADLENGTH len=%lu < blksz=%lu\n",
+                length, blksz);
         ioreq->io_Error = IOERR_BADLENGTH;
         return;
     }

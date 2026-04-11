@@ -1,4 +1,5 @@
 #include "unit_task.h"
+#include "cmd_names.h"
 #include "virtioscsi.h"
 #include "virtioscsi_cmds.h"
 #include "scsi_cdb_helpers.h"
@@ -398,6 +399,8 @@ void UnitTask_Entry(void)
         uint32 s;
         for (s = 0; s < MAX_INFLIGHT; s++) {
             if (unit->inflight[s].ioreq) {
+                DPRINTF(IExec, "[virtioscsi:unit_task.c] Shutdown: aborting inflight slot %lu cmd %lu\n",
+                        s, (uint32)unit->inflight[s].ioreq->io_Command);
                 unit->inflight[s].ioreq->io_Error = IOERR_ABORTED;
                 IExec->ReplyMsg((struct Message *)unit->inflight[s].ioreq);
                 unit->inflight[s].ioreq  = NULL;
@@ -589,6 +592,7 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
 
     if (rc == -1) {
         /* No inflight slot — fall back to synchronous DoIO */
+        DPRINTF(libBase->IExec, "[virtioscsi:unit_task.c] submit_block_io: no free slot, falling back to DoIO\n");
         uint8  scsi_status = 0;
         uint32 residual    = 0;
         int32  sync_rc = VirtIOSCSI_DoIO(libBase, unit, unit->target_id, unit->lun_id,
@@ -596,6 +600,8 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
                                           (uint8 *)ioreq->io_Data, ioreq->io_Length,
                                           is_write, &scsi_status, &residual);
         if (sync_rc != 0) {
+            DPRINTF(libBase->IExec, "[virtioscsi:unit_task.c] submit_block_io: DoIO fallback failed rc=%ld\n",
+                    (long)sync_rc);
             ioreq->io_Error  = (BYTE)sync_rc;
             ioreq->io_Actual = 0;
         } else {
@@ -604,6 +610,8 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
         }
     } else {
         /* Hard failure from Submit */
+        DPRINTF(libBase->IExec, "[virtioscsi:unit_task.c] submit_block_io: Submit HARD FAIL rc=%ld cmd=0x%02X len=%lu\n",
+                (long)rc, (uint32)cdb[0], (uint32)ioreq->io_Length);
         ioreq->io_Error  = (BYTE)rc;
         ioreq->io_Actual = 0;
     }
@@ -704,6 +712,8 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
         break;
 
     default:
+        DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Dispatch: UNKNOWN cmd %lu (%s) — IOERR_NOCMD\n",
+                (uint32)ioreq->io_Command, GetCommandName(ioreq->io_Command));
         ioreq->io_Error = IOERR_NOCMD;
         break;
     }

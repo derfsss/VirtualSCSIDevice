@@ -16,6 +16,8 @@ void Handle_TD_IO64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     UBYTE *data = (UBYTE *)req->io_Data;
 
     if (!data || length == 0) {
+        DPRINTF(libBase->IExec, "[virtioscsi:cmd_td_io64.c] TD_IO64: BADADDRESS data=%p len=%lu\n",
+                (void *)data, length);
         req->io_Error = IOERR_BADADDRESS;
         return;
     }

@@ -12,9 +12,10 @@ An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU virtual
 
 `virtioscsi.device` exposes QEMU VirtIO SCSI virtual disks to AmigaOS 4.1 FE as standard trackdisk-compatible block devices. Once installed, AmigaOS treats them like any other hard disk: partitions are automatically discovered and mounted at boot, and filesystems (FFS2, SFS, etc.) work normally.
 
-The driver auto-detects the best VirtIO transport for each QEMU machine type — no platform-specific QEMU configuration required:
+The driver auto-detects the best VirtIO transport for each QEMU machine type — no platform-specific QEMU configuration required. Tested on all three QEMU PowerPC machines:
 - **Pegasos2** (MV64361 bridge) — modern VirtIO 1.0 MMIO via `stwbrx`/`lwbrx` inline assembly
 - **AmigaOne** (Articia S bridge) — legacy VirtIO I/O port access
+- **SAM460ex** — legacy VirtIO I/O port access
 
 ---
 
@@ -32,7 +33,7 @@ The driver auto-detects the best VirtIO transport for each QEMU machine type —
 - **4K sector support** — block size read from device via READ CAPACITY, not hardcoded
 - **DMA scatter-gather** — uses AmigaOS 4.1 `StartDMA`/`GetDMAList`/`EndDMA` for correct VA→PA translation on the PPC MMU
 - **Pre-allocated DMA buffers** — per-unit MEMF_SHARED request/response buffers with permanent DMA mappings eliminate per-I/O allocation overhead
-- **Bounce buffer ring** — pre-pinned 4096-byte MEMF_SHARED bounce buffers per inflight slot; transfers ≤4096 bytes skip per-call `StartDMA`/`EndDMA` entirely
+- **Cacheable bounce buffers** — 64KB per inflight slot with cached physical addresses; transfers ≤64KB use `CopyMem` + `CacheClearE` for DMA coherency, eliminating per-call `StartDMA`/`EndDMA` overhead
 - **Interrupt coalescing** — `used_event` batching reduces ISR frequency under pipeline load: N in-flight completions → 1 ISR per burst
 - **No deprecated APIs** — uses only current AmigaOS 4.1 FE SDK functions (`StartDMA` not `CachePreDMA`, etc.)
 
@@ -41,7 +42,7 @@ The driver auto-detects the best VirtIO transport for each QEMU machine type —
 ## Requirements
 
 - AmigaOS 4.1 Final Edition (PowerPC)
-- QEMU with one of the supported machine types (`amigaone` or `pegasos2`)
+- QEMU with a supported machine type (`amigaone`, `pegasos2`, or `sam460ex`)
 
 ---
 
@@ -51,13 +52,16 @@ Add the following to your existing QEMU command line to attach VirtIO SCSI disks
 
 ```
 -device virtio-scsi-pci,id=scsi0 \
--drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
--device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
--drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
--device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
+-drive file=image_file.img,if=none,id=vd0,format=raw \
+-device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0
 ```
 
-Replace `virtioscsi1.img` and `virtioscsi2.img` with your own hard drive image files. You can attach fewer or more drives by adjusting the `-drive`/`-device scsi-hd` pairs (up to 8 targets).
+Replace `image_file.img` with the path to your hard drive image file. You can attach additional drives by adding more `-drive`/`-device scsi-hd` pairs (up to 8 targets):
+
+```
+-drive file=second_disk.img,if=none,id=vd1,format=raw \
+-device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
+```
 
 > **Note:** Existing Pegasos2 setups using `-device virtio-scsi-pci-non-transitional` continue to work. The transitional device (`virtio-scsi-pci`) is recommended because it works on all machines without changes.
 
@@ -178,6 +182,12 @@ tests/
 ---
 
 ## Changelog
+
+### v1.8 — 2026-04-11
+- **Unified QEMU platform support**: Single `-device virtio-scsi-pci` works on all QEMU machines (AmigaOne, Pegasos2, SAM460ex). MMIO probe at boot auto-detects modern vs legacy transport — no platform-specific QEMU configuration required. Tested on all three machines.
+- **Performance**: Cacheable bounce buffers replace non-cacheable volatile `bounce_copy()` loop — DMA mapping released after caching physical address, data copied via `IExec->CopyMem()` with explicit `IExec->CacheClearE()` for DMA coherency (~10-20x faster for ≤64KB I/O). O(1) cross-unit cookie routing via encoded `req_cmd->id`. ISR occupancy bitmask skips units with no inflight I/O.
+- **Debug**: Comprehensive error-path instrumentation across all command handlers for serial debug output.
+- **Build**: Fixed header guard collision (`virtioscsi.h` vs `virtio_scsi.h`).
 
 ### v1.7 — 2026-03-18
 - **Performance**: Bounce buffer increased from 4KB to 64KB — eliminates DMA syscalls (StartDMA/AllocSysObject/GetDMAList/EndDMA/FreeSysObject) for virtually all filesystem I/O. Word-aligned bounce copy (~4x faster data movement). Pre-allocated DMA entry arrays for >64KB transfers.

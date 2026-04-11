@@ -402,3 +402,53 @@ Phase 12: Performance-focused changes targeting maximum data throughput for all 
 - `include/version.h` — version bump to 1.7
 - `src/virtio/virtio_scsi_io.c` — bounce_copy, Submit, Harvest, coalescing
 - `src/unit_task.c` — preallocate_unit_dma, free_unit_dma, shutdown drain path
+
+---
+
+## v1.8 Unified Platform & Performance (April 2026)
+
+### Phase 13: Unified QEMU Platform Setup
+
+Single `-device virtio-scsi-pci` (transitional, device ID 0x1004) now works on all three QEMU PowerPC machines. The driver auto-detects modern vs legacy transport at boot via an MMIO probe:
+
+- **PCI discovery reordered**: searches for transitional 0x1004 first (works on all machines), then 0x1048 as fallback for existing Pegasos2 setups.
+- **MMIO probe**: after PCI capability chain walk finds modern config regions, the driver writes ACKNOWLEDGE to STATUS, reads back, and checks for a match. On Pegasos2 (MV64361 transparent bridge) the probe passes and modern mode is used. On AmigaOne (Articia S floating buffer bridge) and SAM460ex, the probe fails and the driver falls back to legacy I/O port access.
+- **PCI Memory Space enable**: moved to the probe phase so MMIO works before InitVirtIOSCSI_Modern.
+- **Tested on**: QEMU `-M pegasos2`, `-M amigaone`, and `-M sam460ex` with identical QEMU command line.
+
+### Phase 14: Performance Optimisations
+
+- **Cacheable bounce buffers**: DMA mapping released immediately after caching the physical address (`EndDMA` with `DMAF_NoModify`). Buffer returns to normal cacheable state. `bounce_copy()` (volatile non-cacheable uint32 loop) replaced with `IExec->CopyMem()` + `IExec->CacheClearE()` for explicit DMA coherency. Write path: `CopyMem` user→bounce then `CacheClearE(CACRF_ClearD)` to flush dirty cache lines to RAM. Read path: `CacheClearE(CACRF_InvalidateD)` to invalidate stale cache then `CopyMem` bounce→user. ~10-20x faster for ≤64KB I/O.
+- **O(1) cross-unit cookie routing**: `req_cmd->id` now encodes `(unit_num << 16 | slot)`. Harvest and DoIO inline-harvest decode both in O(1) instead of O(128) nested loop search across 8 units × 16 slots.
+- **ISR occupancy bitmask**: `active_units_mask` (uint8) in VirtIOSCSIBase tracks which units have inflight I/O. Per-unit `inflight_count` incremented in Submit, decremented in Harvest. ISR skips units with no pending work — eliminates up to 7 spurious `Signal()` calls per interrupt on single-disk setups.
+- **gc-sections reverted**: `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections` stripped all device functions because the linker cannot trace references through the AmigaOS Resident tag's function pointer tables. Reverted immediately.
+
+### Debug Instrumentation
+
+Added DPRINTF to all silent error paths across command handlers:
+- `cmd_read.c`, `cmd_write.c` — BADADDRESS, BADLENGTH validation
+- `cmd_td_io64.c`, `ns_td_io64.c` — BADADDRESS validation
+- `cmd_td_getgeometry.c`, `ns_td_getgeometry64.c` — BADLENGTH, geometry cache failure
+- `ns_parse.c` — unknown NSD command
+- `ns_devicequery.c` — BADLENGTH
+- `scsi_parse.c` — BADLENGTH, bad SCSICmd struct
+- `unit_task.c` — Submit hard failure, DoIO fallback, unknown dispatch command, shutdown abort
+
+### Build Fixes
+
+- **Header guard collision**: `virtioscsi.h` and `virtio/virtio_scsi.h` both used `VIRTIO_SCSI_H` as include guard. `virtioscsi.h` changed to `VIRTIOSCSI_H`. This prevented compilation when both headers were needed in the same translation unit.
+
+### Files Changed
+
+- `include/version.h` — version bump to 1.8, added DEVICE_TIME and DEVVERSIONSTRING_FULL
+- `include/virtioscsi.h` — header guard fix, active_units_mask, inflight_count
+- `src/Init.c` — boot debug line uses DEVVERSIONSTRING_FULL (includes build time)
+- `src/pci/pci_discovery.c` — reordered search (0x1004 first), DetectModernVirtIO for all devices
+- `src/pci/pci_modern_detect.c` — MMIO probe, PCI Memory Space enable
+- `src/virtio/virtio_scsi_io.c` — CopyMem+CacheClearE bounce, O(1) cookie routing, active_units_mask
+- `src/virtio/virtio_irq.c` — ISR bitmask check
+- `src/unit_task.c` — inflight_count tracking, debug instrumentation
+- `src/exec_cmds/cmd_read.c`, `cmd_write.c`, `cmd_td_io64.c`, `cmd_td_getgeometry.c` — debug
+- `src/ns_cmds/ns_parse.c`, `ns_devicequery.c`, `ns_td_io64.c`, `ns_td_getgeometry64.c` — debug
+- `src/scsi_cmds/scsi_parse.c` — debug
+- `README.md`, `README_os4depot.txt` — unified QEMU instructions, v1.8 changelog

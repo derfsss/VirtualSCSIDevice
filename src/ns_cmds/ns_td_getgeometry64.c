@@ -11,6 +11,8 @@ void Handle_NS_TD_GetGeometry64(struct VirtIOSCSIBase *libBase, struct IOStdReq 
     struct DriveGeometry64 *geom = (struct DriveGeometry64 *)req->io_Data;
 
     if (req->io_Length < sizeof(struct DriveGeometry64)) {
+        DPRINTF(libBase->IExec, "[virtioscsi:ns_td_getgeometry64.c] BADLENGTH len=%lu\n",
+                (uint32)req->io_Length);
         req->io_Error = IOERR_BADLENGTH;
         return;
     }
@@ -19,6 +21,8 @@ void Handle_NS_TD_GetGeometry64(struct VirtIOSCSIBase *libBase, struct IOStdReq 
 
     int32 rc = ensure_geometry_cached(libBase, unit);
     if (rc != 0) {
+        DPRINTF(libBase->IExec, "[virtioscsi:ns_td_getgeometry64.c] geometry cache failed rc=%ld\n",
+                (long)rc);
         req->io_Actual = 0;
         req->io_Error = (BYTE)rc;
         return;

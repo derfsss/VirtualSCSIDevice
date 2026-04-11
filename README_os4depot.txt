@@ -1,6 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 1.7 - 18 March 2026
+Version 1.8 - 11 April 2026
 Author: derfsss
 Source: https://github.com/derfsss/VirtualSCSIDevice
 
@@ -24,10 +24,12 @@ gives the operating system access to VirtIO SCSI virtual disks in QEMU
 virtual machines.
 
 The driver auto-detects the best VirtIO transport for each QEMU machine
-type - no platform-specific QEMU configuration required:
+type - no platform-specific QEMU configuration required. Tested on all
+three QEMU PowerPC machines:
 
-  Pegasos2  (MV64361 bridge)  - modern VirtIO 1.0 MMIO
+  Pegasos2  (MV64361 bridge)   - modern VirtIO 1.0 MMIO
   AmigaOne  (Articia S bridge) - legacy VirtIO I/O port access
+  SAM460ex                     - legacy VirtIO I/O port access
 
 The correct transport is auto-detected at boot. VirtIO SCSI disks are
 faster and more flexible than emulated IDE, and this driver makes them
@@ -39,7 +41,7 @@ filesystems (FFS2, SFS, etc.) work normally.
 REQUIREMENTS
 ------------
 - AmigaOS 4.1 Final Edition (PowerPC)
-- QEMU with one of the supported machine types (amigaone or pegasos2)
+- QEMU with a supported machine type (amigaone, pegasos2, or sam460ex)
 
 
 QEMU SETUP
@@ -49,14 +51,15 @@ SCSI disks. The same device type (virtio-scsi-pci) works on all
 supported QEMU machines - the driver auto-detects the best transport:
 
   -device virtio-scsi-pci,id=scsi0 \
-  -drive file=virtioscsi1.img,if=none,id=vd0,format=raw \
-  -device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0 \
-  -drive file=virtioscsi2.img,if=none,id=vd1,format=raw \
-  -device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
+  -drive file=image_file.img,if=none,id=vd0,format=raw \
+  -device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0
 
-Replace virtioscsi1.img and virtioscsi2.img with your own hard drive
-image files. You can attach fewer or more drives by adjusting the
--drive/-device scsi-hd pairs (up to 8 targets).
+Replace image_file.img with the path to your hard drive image file.
+You can attach additional drives by adding more -drive/-device scsi-hd
+pairs (up to 8 targets):
+
+  -drive file=second_disk.img,if=none,id=vd1,format=raw \
+  -device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
 
 Note: Existing Pegasos2 setups using
 -device virtio-scsi-pci-non-transitional continue to work. The
@@ -66,8 +69,8 @@ on all machines without changes.
 
 FEATURES
 --------
-- Dual VirtIO transport: auto-detected via MMIO probe (modern on Pegasos2,
-  legacy on AmigaOne, same QEMU config for both)
+- Dual VirtIO transport: auto-detected via MMIO probe (modern on
+  Pegasos2, legacy on AmigaOne/SAM460, same QEMU config for all)
 - Interrupt-driven I/O - no CPU-burning polling loops
 - Asynchronous I/O - per-unit exec task with message port
 - Discovers up to 8 SCSI targets at boot
@@ -157,6 +160,17 @@ Source code: https://github.com/derfsss/VirtualSCSIDevice
 
 CHANGELOG
 ---------
+
+v1.8 (11.04.2026)
+  - Unified platform: single -device virtio-scsi-pci works on all QEMU
+    machines (AmigaOne, Pegasos2, SAM460ex). MMIO probe auto-detects
+    transport at boot. Tested on all three machines.
+  - Performance: cacheable bounce buffers replace non-cacheable volatile
+    copy — CopyMem + CacheClearE for DMA coherency (~10-20x faster for
+    <=64KB I/O). O(1) cross-unit cookie routing. ISR occupancy bitmask
+    skips inactive units.
+  - Debug: error-path instrumentation across all command handlers.
+  - Build: fixed header guard collision.
 
 v1.7 (18.03.2026)
   - Performance: bounce buffer increased 4KB to 64KB, eliminating DMA

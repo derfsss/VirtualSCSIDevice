@@ -297,36 +297,26 @@ Hot-path performance review targeting maximum data throughput for both small-fil
 
 ---
 
-## Phase 13: Unified QEMU Platform Setup
-**Priority: High | Risk: Medium | Effort: Medium**
+## Phase 13: Unified QEMU Platform Setup ✓ (v1.8)
+**Status: COMPLETE — tested on AmigaOne, Pegasos2, and SAM460ex**
 
-### Problem
+Single `-device virtio-scsi-pci` (transitional, device ID 0x1004) works on all three QEMU PowerPC machines. The driver auto-detects modern vs legacy transport at boot via an MMIO probe (pattern borrowed from VirtIOGPU's chip_scan_pci_caps):
 
-AmigaOne and Pegasos2 currently require different QEMU command lines to attach VirtIO SCSI disks:
-- **AmigaOne** (`-M amigaone`): Must use `virtio-scsi-pci` (legacy/transitional, device 0x1004) because the Articia S bridge cannot forward MMIO — modern-only devices are invisible.
-- **Pegasos2** (`-M pegasos2`): Must use `virtio-scsi-pci-non-transitional` (modern-only, device 0x1048) because the MV64361 bridge handles MMIO transparently but legacy I/O port access returns zero features/queues.
+- PCI discovery reordered: 0x1004 first, 0x1048 fallback
+- MMIO probe: write ACKNOWLEDGE to STATUS, read back, check match
+- Pegasos2 (MV64361): probe passes → modern mode
+- AmigaOne (Articia S): probe fails → legacy I/O
+- SAM460ex: probe fails → legacy I/O
 
-This means users must know which QEMU machine type they're using and select the correct VirtIO device variant. A single set of instructions (or a shared QEMU launch script) cannot work for both.
+---
 
-### Goal
+## Phase 14: Performance Optimisations ✓ (v1.8)
+**Status: COMPLETE**
 
-A single QEMU command line and a single driver binary that works on both machines without user intervention. If both machines cannot use the same VirtIO device type, provide a wrapper script or documented setup that abstracts the difference.
-
-### Investigation Areas
-
-1. **Can Pegasos2 use transitional (`virtio-scsi-pci`)?** Transitional devices expose both legacy and modern interfaces. If Pegasos2's MV64361 bridge can handle the legacy I/O BAR from a transitional device, the driver's auto-detection (try modern caps first, fall back to legacy) would work on both machines with the same `-device virtio-scsi-pci` line.
-
-2. **Can AmigaOne use transitional with modern disabled?** The driver already searches for 0x1048 first and falls back to 0x1004. With a transitional device on AmigaOne, the device appears as 0x1000+subclass (0x1004 for SCSI). If the driver skips the modern cap walk on AmigaOne (or the cap walk finds no valid MMIO BARs and falls through), legacy init handles it.
-
-3. **QEMU machine-type wrapper script**: If hardware constraints prevent a single `-device` type, provide a launcher script that detects the machine type and selects the correct VirtIO device variant automatically.
-
-4. **Single boot disk image**: Ensure a single AmigaOS system disk (with virtioscsi.device in Kickstart) can boot on either QEMU machine type without modification.
-
-### Deliverables
-- Test transitional device on both platforms
-- Document findings (which combinations work, which don't)
-- If possible: single QEMU command line that works on both
-- If not: wrapper script + documentation
+- Cacheable bounce buffers: CopyMem + CacheClearE replaces volatile non-cacheable copy (~10-20x faster)
+- O(1) cross-unit cookie routing via encoded req_cmd->id
+- ISR occupancy bitmask skips units with no inflight I/O
+- gc-sections reverted (breaks AmigaOS Resident structure)
 - Update README.md, README_os4depot.txt with unified setup instructions
 
 ---

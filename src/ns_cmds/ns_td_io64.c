@@ -16,6 +16,8 @@ void Handle_NS_TD_IO64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     UBYTE *data = (UBYTE *)req->io_Data;
 
     if (!data || length == 0) {
+        DPRINTF(libBase->IExec, "[virtioscsi:ns_td_io64.c] NSCMD_TD_IO64: BADADDRESS data=%p len=%lu\n",
+                (void *)data, length);
         req->io_Error = IOERR_BADADDRESS;
         return;
     }
