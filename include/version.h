@@ -3,9 +3,9 @@
 
 /* Individual version components */
 #define DEVICE_VERSION 1
-#define DEVICE_REVISION 5
-#define DEVICE_BUILD 1079
-#define DEVICE_DATE "28.02.2026"
+#define DEVICE_REVISION 8
+#define DEVICE_DATE "11.04.2026"
+#define DEVICE_TIME "12:00"
 #define DEVNAME "virtioscsi.device"
 
 /* Helper macros for stringification */
@@ -22,8 +22,10 @@
  */
 #define DEVVERSIONSTRING DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) " (" DEVICE_DATE ")"
 
-/* Full logging version string including build number */
-#define VERSION_LOG_STRING                                                                                             \
-    DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) "." XSTR(DEVICE_BUILD) " (" DEVICE_DATE ")"
+/*
+ * Extended version string for serial debug output at boot.
+ * Includes build time for distinguishing debug/release builds.
+ */
+#define DEVVERSIONSTRING_FULL DEVVERSIONSTRING " [" DEVICE_TIME "]"
 
 #endif /* VERSION_H */

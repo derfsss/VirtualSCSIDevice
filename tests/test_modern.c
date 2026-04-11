@@ -441,7 +441,7 @@ static void print_scsi_features(uint32 lo, uint32 hi)
     if (lo & (1 << VIRTIO_SCSI_F_INOUT))
         IExec->DebugPrintF("[test_modern]     • VIRTIO_SCSI_F_INOUT (single cmd with read+write buffers) **IMPORTANT**\n");
     else
-        IExec->DebugPrintF("[test_modern]     ⚠ VIRTIO_SCSI_F_INOUT NOT advertised (commands cannot mix input/output)\n");
+        IExec->DebugPrintF("[test_modern]     [!] VIRTIO_SCSI_F_INOUT NOT advertised (commands cannot mix input/output)\n");
     
     if (lo & (1 << VIRTIO_SCSI_F_HOTPLUG))
         IExec->DebugPrintF("[test_modern]     • VIRTIO_SCSI_F_HOTPLUG (device hotplug/unplug event reporting)\n");

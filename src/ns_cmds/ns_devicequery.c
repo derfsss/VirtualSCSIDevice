@@ -10,6 +10,8 @@ void Handle_NS_DeviceQuery(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     DPRINTF(libBase->IExec, "[virtioscsi:ns_devicequery.c] NSCMD_DEVICEQUERY: Length %lu\n", len);
 
     if (len < sizeof(struct NSDeviceQueryResult)) {
+        DPRINTF(libBase->IExec, "[virtioscsi:ns_devicequery.c] NSCMD_DEVICEQUERY: BADLENGTH len=%lu need=%lu\n",
+                len, (uint32)sizeof(struct NSDeviceQueryResult));
         req->io_Actual = 0;
         req->io_Error = IOERR_BADLENGTH;
         return;

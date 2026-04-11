@@ -108,6 +108,59 @@ BOOL DetectModernVirtIO(struct VirtIOSCSIBase *libBase)
         cap = pciDev->GetNextCapability(cap);
     }
 
+    /*
+     * MMIO probe: verify that modern VirtIO MMIO actually works on this
+     * platform before committing to modern mode.
+     *
+     * Transitional devices (0x1004) expose modern PCI capabilities on every
+     * QEMU machine, but MMIO only works if the PCI bridge forwards CPU
+     * memory cycles to device BARs:
+     *
+     *   Pegasos2 (MV64361 transparent bridge): probe passes → modern mode
+     *   AmigaOne (Articia S floating buffer):  probe fails  → legacy fallback
+     *
+     * Probe sequence (same pattern as VirtIOGPU chip_scan_pci_caps):
+     *   1. Enable PCI Memory Space + Bus Master
+     *   2. Reset device (STATUS = 0)
+     *   3. Write STATUS = ACKNOWLEDGE (0x01)
+     *   4. Read STATUS back
+     *   5. Match → MMIO works; mismatch → MMIO broken, clear modern_mode
+     *   6. Reset device again to leave clean state for InitVirtIOSCSI
+     */
+    if (libBase->modern_mode && libBase->common_cfg_base) {
+        /* Enable PCI Memory Space access before probing MMIO.
+         * Without this, the MV64361 ignores all memory transactions. */
+        uint16 pci_cmd = pciDev->ReadConfigWord(PCI_COMMAND);
+        if (!(pci_cmd & (PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER))) {
+            pciDev->WriteConfigWord(PCI_COMMAND,
+                                    pci_cmd | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+            DPRINTF(IExec,
+                    "[virtioscsi:pci_modern_detect.c] Enabled PCI Memory+BusMaster for probe (was 0x%04lX)\n",
+                    (uint32)pci_cmd);
+        }
+
+        uint32 base = libBase->common_cfg_base;
+
+        /* Reset, write ACKNOWLEDGE, read back */
+        mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x00);
+        mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x01); /* ACKNOWLEDGE */
+        uint8 probe = mmio_r8(pciDev, base + VIRTIO_PCI_COMMON_STATUS);
+        /* Reset again — clean slate for InitVirtIOSCSI */
+        mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x00);
+
+        if (probe == 0x01) {
+            DPRINTF(IExec,
+                    "[virtioscsi:pci_modern_detect.c] MMIO probe OK (status=0x%02X) — modern mode confirmed.\n",
+                    (uint32)probe);
+        } else {
+            DPRINTF(IExec,
+                    "[virtioscsi:pci_modern_detect.c] MMIO probe FAILED (status=0x%02X, expected 0x01) — "
+                    "falling back to legacy.\n",
+                    (uint32)probe);
+            libBase->modern_mode = FALSE;
+        }
+    }
+
     DPRINTF(IExec, "[virtioscsi:pci_modern_detect.c] VirtIO mode: %s\n",
             libBase->modern_mode ? "MODERN" : "LEGACY");
 

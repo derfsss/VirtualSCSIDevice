@@ -1,5 +1,5 @@
-#ifndef VIRTIO_VIRTIO_SCSI_H
-#define VIRTIO_VIRTIO_SCSI_H
+#ifndef VIRTIO_SCSI_H
+#define VIRTIO_SCSI_H
 
 #include <exec/types.h>
 
@@ -33,4 +33,4 @@
 #define VIRTIO_SCSI_F_CHANGE 2
 #define VIRTIO_SCSI_F_T10_PI 3
 
-#endif /* VIRTIO_VIRTIO_SCSI_H */
+#endif /* VIRTIO_SCSI_H */

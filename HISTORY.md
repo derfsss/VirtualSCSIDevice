@@ -331,3 +331,124 @@ Three bugs found and fixed during Pegasos2 hardware testing of the modern VirtIO
 - **Fix**: When a cookie doesn't match the calling unit's `inflight[]`, search `libBase->units[]` globally to find the true owner unit. Reply the IORequest via the owner's `inflight[slot]` and `resp_bufs[slot]`. Same fix applied to DoIO's inline-harvest loop.
 - Both drives (DH7/SmartFilesystem T0L0, DH8/FastFileSystem T1L1) now appear on Workbench.
 - All I/O completing cleanly: geometry queries, 32KB and 1KB block reads, no unmatched cookies.
+
+---
+
+## v1.6 Code Review & Build Hardening (March 2026)
+
+Comprehensive code review of all source files, headers, tests, and build system. Version bumped to 1.6 with build number removed from version string (standard AmigaOS major.minor format).
+
+### Bug Fixes
+
+- **Sub-block I/O rejection**: `CMD_READ` and `CMD_WRITE` previously rounded `blocks = 0` up to `blocks = 1` when `io_Length < block_size`. This created a CDB/buffer size mismatch — the SCSI CDB requested 1 full block but the DMA buffer only covered `io_Length` bytes. Now rejects sub-block requests with `IOERR_BADLENGTH`. Files changed: `src/exec_cmds/cmd_read.c`, `src/exec_cmds/cmd_write.c`.
+- **DoIO semaphore dance**: The cross-unit DoIO cookie stash path in `VirtIOSCSI_DoIO()` released `io_lock` after finding the target unit, then immediately re-acquired it to stash the cookie. Merged into a single lock hold — find and stash are now atomic under one `ObtainSemaphore`/`ReleaseSemaphore` pair. File changed: `src/virtio/virtio_scsi_io.c`.
+- **Test capacity overflow**: `test_inquiry.c` computed `(uint64)(blocks + 1) * block_len` where `blocks + 1` was evaluated as `uint32` before widening, overflowing for disks >4GB. Fixed to `((uint64)blocks + 1) * block_len`. File changed: `tests/test_inquiry.c`.
+
+### Build System Improvements
+
+- **Header dependency tracking**: Added `-MMD -MP` to CFLAGS and `-include $(DEP)` to Makefile. Changes to any header in `include/` now correctly trigger recompilation of dependent source files.
+- **test_inquiry added to build**: `test_inquiry.c` was previously not built by the default `all` target. Now included alongside `test_virtioscsi` and `test_modern`.
+- **Stricter compiler warnings**: Added `-Wextra`, `-Wshadow`, `-Wformat=2` to catch potential issues at compile time.
+
+### Code Quality
+
+- **SAM-2 LUN constant**: Magic number `0x40` in `virtio_scsi_set_lun()` replaced with named constant `SAM2_SINGLE_LEVEL_LUN`. File changed: `include/virtio/virtio_scsi_cmd.h`.
+- **Header guard consistency**: `include/virtio/virtio_scsi.h` guard renamed from `VIRTIO_VIRTIO_SCSI_H` (double prefix) to `VIRTIO_SCSI_H`, matching all other headers.
+- **ASCII debug output**: Emoji character in `test_modern.c` replaced with ASCII `[!]` for serial console compatibility.
+- **Version string cleanup**: Removed `DEVICE_BUILD` and `VERSION_LOG_STRING` from `version.h`. Version string now uses standard AmigaOS `major.minor` format. `Init.c` log line updated to use `DEVVERSIONSTRING`.
+
+### Files Changed
+
+- `include/version.h` — version bump to 1.6, removed build number
+- `include/virtio/virtio_scsi.h` — header guard fix
+- `include/virtio/virtio_scsi_cmd.h` — SAM2_SINGLE_LEVEL_LUN constant
+- `src/exec_cmds/cmd_read.c` — sub-block I/O rejection
+- `src/exec_cmds/cmd_write.c` — sub-block I/O rejection
+- `src/virtio/virtio_scsi_io.c` — semaphore consolidation
+- `src/Init.c` — version string reference update
+- `tests/test_inquiry.c` — capacity overflow fix
+- `tests/test_modern.c` — emoji replacement
+- `Makefile` — dependency tracking, warnings, test_inquiry target
+- `README.md` — v1.6 changelog, consolidated historical entries
+- `README_os4depot.txt` — v1.6 changelog, consolidated entries
+- `ROADMAP.md` — Phase 10 marked complete, Phase 11 added
+- `HISTORY.md` — v1.6 entry added
+
+---
+
+## v1.7 I/O Throughput Optimisation (March 2026)
+
+Phase 12: Performance-focused changes targeting maximum data throughput for all workload types. See `docs/performance_plan_v2.md` for the original analysis and `docs/phase12_throughput_optimization.md` for the implementation log.
+
+### Group A: Bounce Buffer Improvements
+
+- **64KB bounce buffer**: `BOUNCE_BUF_SIZE` increased from 4096 to 65536. Eliminates 5 DMA syscalls per request (StartDMA, AllocSysObject, GetDMAList on submit; FreeSysObject, EndDMA on completion) for all transfers ≤64KB. Covers virtually all AmigaOS filesystem block I/O. Memory cost: ~1MB MEMF_SHARED per active unit.
+- **Word-aligned bounce copy**: `bounce_copy()` rewritten to copy uint32 words (4 bytes per iteration) with volatile access for MEMF_SHARED non-cacheable memory. Remaining 0–3 tail bytes copied individually. ~4x faster than the previous byte-at-a-time loop. Both MEMF_SHARED and MEMF_PUBLIC buffers are always word-aligned.
+
+### Group B: Per-Request Overhead Reduction
+
+- **O(1) inflight slot allocation**: Added `free_head` and `inflight_next[MAX_INFLIGHT]` to unit struct. Submit pops from head in O(1) instead of linear O(16) scan. Free list initialized at unit startup, slots returned on completion or error.
+- **O(1) Harvest cookie matching**: `req_cmd->id` already stores the slot index (set at Submit time). Harvest reads this to find the matching slot in O(1) instead of scanning all 16 slots. Cross-unit search (rare path) remains linear.
+- **Pre-allocated DMA entry arrays**: `data_dma_pool[MAX_INFLIGHT]` allocated at unit startup with `MAX_SG_ENTRIES` capacity each. Submit uses pooled array instead of per-request AllocSysObjectTags. Harvest skips FreeSysObject. Only EndDMA is called per completion.
+- **Global occupied counter**: `occupied_count` in `VirtIOSCSIBase` replaces the 128-slot scan (8 units × 16 slots) at the end of Harvest for interrupt coalescing. Incremented in Submit on successful AddBuf, decremented in Harvest/inline-harvest on slot clear.
+
+### Group C: Deferred
+
+- **Indirect descriptors (modern)**: Deferred — DMA mapping overhead for indirect tables negates the benefit without a pre-allocated table pool. Current direct-chain path works correctly with sufficient descriptor pool (256 entries).
+
+### Files Changed
+
+- `include/virtioscsi.h` — BOUNCE_BUF_SIZE, free_head/inflight_next, data_dma_pool, occupied_count
+- `include/version.h` — version bump to 1.7
+- `src/virtio/virtio_scsi_io.c` — bounce_copy, Submit, Harvest, coalescing
+- `src/unit_task.c` — preallocate_unit_dma, free_unit_dma, shutdown drain path
+
+---
+
+## v1.8 Unified Platform & Performance (April 2026)
+
+### Phase 13: Unified QEMU Platform Setup
+
+Single `-device virtio-scsi-pci` (transitional, device ID 0x1004) now works on all three QEMU PowerPC machines. The driver auto-detects modern vs legacy transport at boot via an MMIO probe:
+
+- **PCI discovery reordered**: searches for transitional 0x1004 first (works on all machines), then 0x1048 as fallback for existing Pegasos2 setups.
+- **MMIO probe**: after PCI capability chain walk finds modern config regions, the driver writes ACKNOWLEDGE to STATUS, reads back, and checks for a match. On Pegasos2 (MV64361 transparent bridge) the probe passes and modern mode is used. On AmigaOne (Articia S floating buffer bridge) and SAM460ex, the probe fails and the driver falls back to legacy I/O port access.
+- **PCI Memory Space enable**: moved to the probe phase so MMIO works before InitVirtIOSCSI_Modern.
+- **Tested on**: QEMU `-M pegasos2`, `-M amigaone`, and `-M sam460ex` with identical QEMU command line.
+
+### Phase 14: Performance Optimisations
+
+- **Cacheable bounce buffers**: DMA mapping released immediately after caching the physical address (`EndDMA` with `DMAF_NoModify`). Buffer returns to normal cacheable state. `bounce_copy()` (volatile non-cacheable uint32 loop) replaced with `IExec->CopyMem()` + `IExec->CacheClearE()` for explicit DMA coherency. Write path: `CopyMem` user→bounce then `CacheClearE(CACRF_ClearD)` to flush dirty cache lines to RAM. Read path: `CacheClearE(CACRF_InvalidateD)` to invalidate stale cache then `CopyMem` bounce→user. ~10-20x faster for ≤64KB I/O.
+- **O(1) cross-unit cookie routing**: `req_cmd->id` now encodes `(unit_num << 16 | slot)`. Harvest and DoIO inline-harvest decode both in O(1) instead of O(128) nested loop search across 8 units × 16 slots.
+- **ISR occupancy bitmask**: `active_units_mask` (uint8) in VirtIOSCSIBase tracks which units have inflight I/O. Per-unit `inflight_count` incremented in Submit, decremented in Harvest. ISR skips units with no pending work — eliminates up to 7 spurious `Signal()` calls per interrupt on single-disk setups.
+- **gc-sections reverted**: `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections` stripped all device functions because the linker cannot trace references through the AmigaOS Resident tag's function pointer tables. Reverted immediately.
+
+### Debug Instrumentation
+
+Added DPRINTF to all silent error paths across command handlers:
+- `cmd_read.c`, `cmd_write.c` — BADADDRESS, BADLENGTH validation
+- `cmd_td_io64.c`, `ns_td_io64.c` — BADADDRESS validation
+- `cmd_td_getgeometry.c`, `ns_td_getgeometry64.c` — BADLENGTH, geometry cache failure
+- `ns_parse.c` — unknown NSD command
+- `ns_devicequery.c` — BADLENGTH
+- `scsi_parse.c` — BADLENGTH, bad SCSICmd struct
+- `unit_task.c` — Submit hard failure, DoIO fallback, unknown dispatch command, shutdown abort
+
+### Build Fixes
+
+- **Header guard collision**: `virtioscsi.h` and `virtio/virtio_scsi.h` both used `VIRTIO_SCSI_H` as include guard. `virtioscsi.h` changed to `VIRTIOSCSI_H`. This prevented compilation when both headers were needed in the same translation unit.
+
+### Files Changed
+
+- `include/version.h` — version bump to 1.8, added DEVICE_TIME and DEVVERSIONSTRING_FULL
+- `include/virtioscsi.h` — header guard fix, active_units_mask, inflight_count
+- `src/Init.c` — boot debug line uses DEVVERSIONSTRING_FULL (includes build time)
+- `src/pci/pci_discovery.c` — reordered search (0x1004 first), DetectModernVirtIO for all devices
+- `src/pci/pci_modern_detect.c` — MMIO probe, PCI Memory Space enable
+- `src/virtio/virtio_scsi_io.c` — CopyMem+CacheClearE bounce, O(1) cookie routing, active_units_mask
+- `src/virtio/virtio_irq.c` — ISR bitmask check
+- `src/unit_task.c` — inflight_count tracking, debug instrumentation
+- `src/exec_cmds/cmd_read.c`, `cmd_write.c`, `cmd_td_io64.c`, `cmd_td_getgeometry.c` — debug
+- `src/ns_cmds/ns_parse.c`, `ns_devicequery.c`, `ns_td_io64.c`, `ns_td_getgeometry64.c` — debug
+- `src/scsi_cmds/scsi_parse.c` — debug
+- `README.md`, `README_os4depot.txt` — unified QEMU instructions, v1.8 changelog

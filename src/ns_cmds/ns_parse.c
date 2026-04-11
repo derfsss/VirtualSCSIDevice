@@ -32,6 +32,8 @@ void Parse_NS_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
         break;
 
     default:
+        DPRINTF(libBase->IExec, "[virtioscsi:ns_parse.c] NS UNKNOWN cmd 0x%04lX — IOERR_NOCMD\n",
+                (uint32)req->io_Command);
         req->io_Error = IOERR_NOCMD;
         break;
     }

@@ -1,9 +1,14 @@
 CC = ppc-amigaos-gcc
-CFLAGS = -O2 -Wall -I./include -fno-tree-loop-distribute-patterns
+CFLAGS = -O2 -Wall -Wextra -Wshadow -Wformat=2 -I./include -fno-tree-loop-distribute-patterns
+DEPFLAGS = -MMD -MP
 LDFLAGS = -nostartfiles
+
+DOCKER_IMAGE = walkero/amigagccondocker:os4-gcc11
+DOCKER_RUN   = docker run --rm -v "$(shell pwd):/work" -w /work $(DOCKER_IMAGE)
 
 BUILD_DIR = build
 DIST_DIR = dist
+DIST_NAME = VirtualSCSIDevice
 TARGET = $(BUILD_DIR)/virtioscsi.device
 SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c \
       src/scsi_cdb_helpers.c src/cmd_names.c src/unit_discovery.c src/unit_task.c \
@@ -23,8 +28,11 @@ SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c
       src/virtio/virtio_irq.c src/virtio/virtio_scsi_io.c
 
 OBJ = $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(SRC))
+DEP = $(OBJ:.o=.d)
 
-all: $(BUILD_DIR) $(TARGET) $(BUILD_DIR)/test_virtioscsi $(BUILD_DIR)/test_modern
+.PHONY: all dist dist-lha clean help
+
+all: $(BUILD_DIR) $(TARGET) $(BUILD_DIR)/test_virtioscsi $(BUILD_DIR)/test_modern $(BUILD_DIR)/test_inquiry
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -38,9 +46,58 @@ $(BUILD_DIR)/test_virtioscsi: tests/test_virtioscsi.c | $(BUILD_DIR)
 $(BUILD_DIR)/test_modern: tests/test_modern.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@ -lauto
 
+$(BUILD_DIR)/test_inquiry: tests/test_inquiry.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $< -o $@ -lauto
+
 $(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+-include $(DEP)
+
+# Create distribution directory with all files needed to run on AmigaOS 4
+dist: all
+	@echo "=== Creating distribution ==="
+	rm -rf $(DIST_DIR)/$(DIST_NAME)
+	mkdir -p $(DIST_DIR)/$(DIST_NAME)
+	mkdir -p $(DIST_DIR)/$(DIST_NAME)/Tests
+	@# Device driver
+	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/
+	@# Install script
+	cp Autoinstall                    $(DIST_DIR)/$(DIST_NAME)/
+	@# Documentation
+	cp README_os4depot.txt            $(DIST_DIR)/$(DIST_NAME)/
+	@# Test programs
+	-cp $(BUILD_DIR)/test_virtioscsi  $(DIST_DIR)/$(DIST_NAME)/Tests/ 2>/dev/null || true
+	-cp $(BUILD_DIR)/test_modern      $(DIST_DIR)/$(DIST_NAME)/Tests/ 2>/dev/null || true
+	-cp $(BUILD_DIR)/test_inquiry     $(DIST_DIR)/$(DIST_NAME)/Tests/ 2>/dev/null || true
+	@echo "Distribution created in $(DIST_DIR)/$(DIST_NAME)/"
+	@echo "Contents:"
+	@find $(DIST_DIR)/$(DIST_NAME) -type f | sort
+
+# Create LHA archive from distribution
+dist-lha: dist
+	@echo "=== Creating LHA archive ==="
+	$(DOCKER_RUN) sh -c 'cd $(DIST_DIR) && lha ao5q /work/$(DIST_DIR)/$(DIST_NAME).lha $(DIST_NAME)'
+	@ls -la $(DIST_DIR)/$(DIST_NAME).lha
+	@echo "Archive created: $(DIST_DIR)/$(DIST_NAME).lha"
 
 clean:
 	rm -rf $(BUILD_DIR) $(DIST_DIR)
+
+help:
+	@echo "virtioscsi.device Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all       - Build device driver and test programs (default)"
+	@echo "  dist      - Create distribution directory for AmigaOS 4"
+	@echo "  dist-lha  - Create LHA archive ($(DIST_DIR)/$(DIST_NAME).lha)"
+	@echo "  clean     - Remove all build artifacts"
+	@echo "  help      - Show this help"
+	@echo ""
+	@echo "Build via Docker:"
+	@echo "  docker run --rm -v \$$(pwd):/src -w /src $(DOCKER_IMAGE) make"
+	@echo "  docker run --rm -v \$$(pwd):/src -w /src $(DOCKER_IMAGE) make dist-lha"
+	@echo ""
+	@echo "Debug build:"
+	@echo "  make CFLAGS=\"-O2 -Wall -Wextra -I./include -fno-tree-loop-distribute-patterns -DDEBUG\""

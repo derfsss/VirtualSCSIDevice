@@ -34,6 +34,8 @@ static void FillAutoSense(struct SCSICmd *scsiCmd, uint8 sense_key, uint8 asc, u
 void Parse_SCSI_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 {
     if (!req->io_Data || req->io_Length < sizeof(struct SCSICmd)) {
+        DPRINTF(libBase->IExec, "[virtioscsi:scsi_parse.c] HD_SCSICMD: BADLENGTH data=%p len=%lu need=%lu\n",
+                (void *)req->io_Data, (uint32)req->io_Length, (uint32)sizeof(struct SCSICmd));
         req->io_Error = IOERR_BADLENGTH;
         return;
     }
@@ -41,6 +43,8 @@ void Parse_SCSI_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     struct SCSICmd *scsiCmd = (struct SCSICmd *)req->io_Data;
 
     if (!scsiCmd->scsi_Command || scsiCmd->scsi_CmdLength == 0) {
+        DPRINTF(libBase->IExec, "[virtioscsi:scsi_parse.c] HD_SCSICMD: bad SCSICmd (cmd=%p cmdlen=%lu)\n",
+                (void *)scsiCmd->scsi_Command, (uint32)scsiCmd->scsi_CmdLength);
         req->io_Error = HFERR_BadStatus;
         return;
     }

@@ -1,7 +1,7 @@
 # VirtualSCSIDevice Development Roadmap
 
 ## Context
-The `virtioscsi.device` v1.3 (Build 1033) is a working, production-ready AmigaOS 4.1 FE VirtIO SCSI device driver. It builds, boots systems, and passes stress testing. The driver now features interrupt-driven I/O and a full async device-task architecture. This roadmap tracks completed and future work.
+The `virtioscsi.device` v1.6 is a working, production-ready AmigaOS 4.1 FE VirtIO SCSI device driver. It builds, boots systems, and passes stress testing. The driver features interrupt-driven I/O, a full async device-task architecture, and dual VirtIO transport (Legacy + Modern). This roadmap tracks completed and future work.
 
 ---
 
@@ -213,14 +213,14 @@ Several files contained a single `return 0` statement. Two SCSI files were ident
 
 ---
 
-## Phase 10: v1.5 — Modern VirtIO 1.0 Support
+## Phase 10: Modern VirtIO 1.0 Support
 **Priority: High | Risk: Medium | Effort: Medium**
 
 ### Context
 
-v1.4 (build 1070) uses VirtIO legacy PCI transport: I/O BAR (device ID 0x1004).
 Modern VirtIO (device ID 0x1048, `VIRTIO_F_VERSION_1`) uses MMIO BARs with PCI
-capability chains and a LE vring layout.
+capability chains and a LE vring layout. Legacy VirtIO (device ID 0x1004) uses
+I/O port BAR with native-endian vring.
 
 ### Platform Compatibility
 
@@ -232,25 +232,92 @@ Investigation (Feb 2026) confirmed:
 barrier. `InWord`/`InLong` silently return 0 for memory BARs on AmigaOS 4.1 FE.
 Only `InByte`/`OutByte` work; multi-byte access requires byte-assembly helpers.
 
-### Status
+### Status: Complete (v1.5, 2026-02-28)
 
-| Build | Item | Status |
-|-------|------|--------|
-| 1071 | `test_modern.c` probe program — fully validates Modern VirtIO init on Pegasos2 | **Complete** (2026-02-25) |
-| 1072 | Auto-detection in driver (`DetectModernVirtIO`), log-only | Pending |
-| 1073 | Modern init sequence + LE vring wrappers + ISR dispatch | Pending |
-| 1074 | Guards, cleanup, final version bump, release | Pending |
+All items implemented and tested on both QEMU amigaone (legacy) and QEMU pegasos2 (modern):
+- `test_modern.c` probe program validates Modern VirtIO init on Pegasos2
+- Auto-detection in driver (`DetectModernVirtIO`) via PCI capability chain walk
+- Modern init sequence with LE vring wrappers and ISR dispatch
+- PCI Memory Space + Bus Master enable, NULL-safe BAR0, modern-aware notify
 
-### Key Design Decisions (already validated)
-- `test_modern.c` uses `stwbrx`/`lwbrx` macros — these are the canonical MMIO instructions
-- Feature negotiation confirmed: driver accepts full offered set (0x30000006/0x00000001)
-- Status handshake confirmed: 0x00→0x03→0x0B→0x0F works end-to-end on QEMU Pegasos2
-- `VIRTIO_SCSI_F_INOUT` not offered by QEMU — **this does not affect normal disk I/O**. READ(10)/WRITE(10)/READ CAPACITY/INQUIRY are all unidirectional; INOUT is only needed for bidirectional SCSI commands that have simultaneous data-in AND data-out phases (rare, non-disk). The earlier concern was a misreading of VirtIO spec 5.6.6.1.1.
-- `test_modern` scans for any `1AF4:xxxx` — may find RNG (0x1044) or other device first; driver init must use `FDT_DeviceID, 0x1048`
+### Key Design Decisions
+- `stwbrx`/`lwbrx` macros for canonical PPC MMIO — `InWord`/`InLong` return 0 on MMIO BARs
+- Feature negotiation: driver accepts full offered set (0x30000006/0x00000001)
+- `VIRTIO_SCSI_F_INOUT` not offered by QEMU — does not affect normal disk I/O
+- PCI discovery searches for modern 0x1048 first, falls back to legacy 0x1004
 - For AmigaOne: continue using legacy device (0x1004) + I/O port interface
 
 ### Files
 See `docs/v1.5_implementation_plan.md` for the detailed build plan.
+
+---
+
+## Phase 11: Code Review & Build Hardening
+**Priority: Medium | Risk: Low | Effort: Small**
+
+### Status: Complete (v1.6, 2026-03-18)
+
+Comprehensive code review and build system improvements:
+- **Bug fix**: CMD_READ/CMD_WRITE rejected sub-block I/O with `IOERR_BADLENGTH` instead of silently rounding up
+- **Bug fix**: Redundant semaphore release/re-acquire in DoIO cross-unit stash path merged into single lock hold
+- **Build**: Automatic header dependency tracking (`-MMD -MP`), stricter warnings (`-Wextra -Wshadow -Wformat=2`)
+- **Cleanup**: Named constant for SAM-2 LUN encoding, consistent header guards, ASCII-only debug output
+- **Version**: Removed build number from version string (standard AmigaOS major.minor format)
+
+---
+
+## Phase 12: I/O Throughput Optimisation (v1.7)
+**Priority: High | Risk: Low-Medium | Effort: Medium**
+
+Hot-path performance review targeting maximum data throughput for both small-file and large-file workloads. See `docs/performance_plan_v2.md` for full analysis.
+
+### Group A — Bounce Buffer Improvements (highest impact)
+
+1. **Increase bounce buffer 4KB → 64KB**: Eliminates 5 DMA syscalls per request for virtually all filesystem I/O (SFS, FFS2 block reads are ≤64KB). Memory cost: ~1MB MEMF_SHARED per active unit.
+2. **Word-aligned bounce copy**: Replace byte-at-a-time volatile copy with uint32 word loop. ~4x faster for aligned transfers (all MEMF_SHARED and MEMF_PUBLIC buffers are word-aligned).
+3. **Advertise max transfer size in geometry**: Populate `TD_GETGEOMETRY` so filesystems can issue optimally-sized requests instead of conservative 512B chunks.
+
+### Group B — Per-Request Overhead Reduction
+
+4. **O(1) inflight slot allocation**: Free-list pointer instead of linear O(16) scan in Submit. Harvest uses slot index from `req_cmd->id` for O(1) cookie matching.
+5. **Pre-allocated DMA entry arrays**: For >64KB transfers, eliminate per-request `AllocSysObjectTags`/`FreeSysObject`. Pre-allocate one `DMAEntry[MAX_SG_ENTRIES]` per inflight slot at unit startup.
+6. **Track inflight occupancy counter**: Replace 128-slot scan in interrupt coalescing with increment/decrement counter.
+
+### Group C — Modern-Only Enhancement
+
+7. **Enable indirect descriptors on modern path**: LE byte-swap wrappers already exist; endian issue only affects legacy. Each request consumes 1 vring descriptor instead of up to 64, allowing full queue concurrency for large transfers.
+
+### Files
+- `include/virtioscsi.h` — BOUNCE_BUF_SIZE, free-list fields, DMA pool arrays, occupancy counter
+- `src/virtio/virtio_scsi_io.c` — bounce_copy, Submit, Harvest, coalescing
+- `src/unit_task.c` — pool allocation/deallocation
+- `src/exec_cmds/cmd_td_getgeometry.c`, `src/ns_cmds/ns_td_getgeometry64.c` — max transfer
+- `src/virtio/virtio_init.c` — indirect desc negotiation (modern only)
+- `src/virtio/virtqueue.c` — indirect path with pre-allocated tables
+
+---
+
+## Phase 13: Unified QEMU Platform Setup ✓ (v1.8)
+**Status: COMPLETE — tested on AmigaOne, Pegasos2, and SAM460ex**
+
+Single `-device virtio-scsi-pci` (transitional, device ID 0x1004) works on all three QEMU PowerPC machines. The driver auto-detects modern vs legacy transport at boot via an MMIO probe (pattern borrowed from VirtIOGPU's chip_scan_pci_caps):
+
+- PCI discovery reordered: 0x1004 first, 0x1048 fallback
+- MMIO probe: write ACKNOWLEDGE to STATUS, read back, check match
+- Pegasos2 (MV64361): probe passes → modern mode
+- AmigaOne (Articia S): probe fails → legacy I/O
+- SAM460ex: probe fails → legacy I/O
+
+---
+
+## Phase 14: Performance Optimisations ✓ (v1.8)
+**Status: COMPLETE**
+
+- Cacheable bounce buffers: CopyMem + CacheClearE replaces volatile non-cacheable copy (~10-20x faster)
+- O(1) cross-unit cookie routing via encoded req_cmd->id
+- ISR occupancy bitmask skips units with no inflight I/O
+- gc-sections reverted (breaks AmigaOS Resident structure)
+- Update README.md, README_os4depot.txt with unified setup instructions
 
 ---
 
@@ -267,4 +334,7 @@ See `docs/v1.5_implementation_plan.md` for the detailed build plan.
 | 7 | Performance optimisations | Complete | 2026-02-23 |
 | 8 | MSI-X support | Pending | |
 | 9 | Event queue / hot-plug | Pending | |
-| 10 | Modern VirtIO 1.0 (v1.5) | In Progress | 2026-02-25 |
+| 10 | Modern VirtIO 1.0 (v1.5) | Complete | 2026-02-28 |
+| 11 | Code review & build hardening (v1.6) | Complete | 2026-03-18 |
+| 12 | I/O throughput optimisation (v1.7) | Complete | 2026-03-18 |
+| 13 | Unified QEMU platform setup | Pending | |
