@@ -317,7 +317,18 @@ Single `-device virtio-scsi-pci` (transitional, device ID 0x1004) works on all t
 - O(1) cross-unit cookie routing via encoded req_cmd->id
 - ISR occupancy bitmask skips units with no inflight I/O
 - gc-sections reverted (breaks AmigaOS Resident structure)
-- Update README.md, README_os4depot.txt with unified setup instructions
+
+---
+
+## Phase 15: Boot Drive Support ✓ (v53.8)
+**Status: COMPLETE — tested on AmigaOne, Pegasos2, and SAM460ex**
+
+- Resident priority changed from -60 to 0 (matching other disk device drivers)
+- Major version bumped to 53 (AmigaOS 4.1 FE SDK convention)
+- diskboot.config entry documented: `virtioscsi.device 8 3`
+- Kicklayout placement: MODULE line before diskboot.config and diskboot.kmod
+- Dynamic build date/time stamps via Makefile
+- Confirmed working as boot drive on all three QEMU machines
 
 ---
 
@@ -337,4 +348,6 @@ Single `-device virtio-scsi-pci` (transitional, device ID 0x1004) works on all t
 | 10 | Modern VirtIO 1.0 (v1.5) | Complete | 2026-02-28 |
 | 11 | Code review & build hardening (v1.6) | Complete | 2026-03-18 |
 | 12 | I/O throughput optimisation (v1.7) | Complete | 2026-03-18 |
-| 13 | Unified QEMU platform setup | Pending | |
+| 13 | Unified QEMU platform setup (v1.8) | Complete | 2026-04-11 |
+| 14 | Performance optimisations (v1.8) | Complete | 2026-04-11 |
+| 15 | Boot drive support (v53.8) | Complete | 2026-04-12 |

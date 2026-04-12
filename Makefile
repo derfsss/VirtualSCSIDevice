@@ -1,5 +1,8 @@
 CC = ppc-amigaos-gcc
-CFLAGS = -O2 -Wall -Wextra -Wshadow -Wformat=2 -I./include -fno-tree-loop-distribute-patterns
+BUILD_DATE := $(shell date +"%d.%m.%Y")
+BUILD_TIME := $(shell date +"%H:%M")
+CFLAGS = -O2 -Wall -Wextra -Wshadow -Wformat=2 -I./include -fno-tree-loop-distribute-patterns \
+         -DBUILD_DATE='"$(BUILD_DATE)"' -DBUILD_TIME='"$(BUILD_TIME)"'
 DEPFLAGS = -MMD -MP
 LDFLAGS = -nostartfiles
 

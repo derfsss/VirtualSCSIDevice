@@ -69,33 +69,56 @@ Replace `image_file.img` with the path to your hard drive image file. You can at
 
 ## Installation
 
+VirtIO SCSI disks can be used as **boot drives** or as additional data drives. The driver must be added to the Kickstart module set and registered with `diskboot.config` so the system can find bootable partitions.
+
 ### Using BBoot (Kickstart zip archive)
 
 [BBoot](https://codeberg.org/qmiga/bboot/) boots AmigaOS from a zip archive containing all Kickstart modules. To add `virtioscsi.device`:
 
 1. Add `virtioscsi.device` to the `Kickstart/` folder inside your BBoot zip archive.
-2. Edit the `Kicklayout` file inside the zip archive and add the following line after the existing boot device driver entry (e.g. after `MODULE Kickstart/a1ide.device.kmod` for AmigaOne, or after `MODULE Kickstart/peg2ide.device.kmod` for Pegasos2):
+
+2. Edit the `Kicklayout` file inside the zip archive. Add the following line just **before** the `diskboot.config` and `diskboot.kmod` entries:
 
 ```
 MODULE Kickstart/virtioscsi.device
 ```
 
-3. Save the zip archive and boot with BBoot as normal.
+For example, the relevant section should look like:
+
+```
+MODULE Kickstart/peg2ide.device.kmod
+MODULE Kickstart/virtioscsi.device
+MODULE Kickstart/diskboot.config
+MODULE Kickstart/diskboot.kmod
+```
+
+3. Edit `Kickstart/diskboot.config` inside the zip archive and add the following line:
+
+```
+virtioscsi.device 8 3
+```
+
+4. Save the zip archive and boot with BBoot as normal.
 
 ### Without BBoot (SYS:Kickstart folder)
 
 If you are not using BBoot and have AmigaOS installed on a bootable disk:
 
 1. Copy `virtioscsi.device` to the `SYS:Kickstart/` folder on your AmigaOS system disk.
-2. Edit the `SYS:Kickstart/Kicklayout` file and add the following line after the existing boot device driver entry (e.g. after `MODULE Kickstart/a1ide.device.kmod` for AmigaOne, or after `MODULE Kickstart/peg2ide.device.kmod` for Pegasos2):
+
+2. Edit `SYS:Kickstart/Kicklayout` and add the following line just **before** the `diskboot.config` and `diskboot.kmod` entries:
 
 ```
 MODULE Kickstart/virtioscsi.device
 ```
 
-3. Save and reboot. The driver will be resident in memory from the very start of the boot process.
+3. Edit `SYS:Kickstart/diskboot.config` and add the following line:
 
-> **Note:** The driver has a resident priority of -60 so it initialises after `mounter.library`. Ensure `mounter.library` is also present in your Kickstart module set.
+```
+virtioscsi.device 8 3
+```
+
+4. Save and reboot. The driver will be resident in memory from the very start of the boot process, and VirtIO SCSI disks can be used as boot drives.
 
 ---
 
@@ -182,6 +205,10 @@ tests/
 ---
 
 ## Changelog
+
+### v53.8 — 2026-04-12
+- **Boot drive support**: VirtIO SCSI disks can now be used as boot drives. Resident priority changed to 0 (matching other disk device drivers). Added `diskboot.config` registration instructions. Major version bumped to 53 (matching AmigaOS 4.1 FE SDK device driver convention).
+- **Build**: Dynamic build date/time stamps via Makefile (`-DBUILD_DATE` / `-DBUILD_TIME`).
 
 ### v1.8 — 2026-04-11
 - **Unified QEMU platform support**: Single `-device virtio-scsi-pci` works on all QEMU machines (AmigaOne, Pegasos2, SAM460ex). MMIO probe at boot auto-detects modern vs legacy transport — no platform-specific QEMU configuration required. Tested on all three machines.

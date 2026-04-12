@@ -51,7 +51,7 @@ static const struct Resident dev_res __attribute__((used)) = {RTC_MATCHWORD,
                                                               RTF_NATIVE | RTF_COLDSTART | RTF_AUTOINIT,
                                                               DEVVER,
                                                               NT_DEVICE,
-                                                              -60,
+                                                              0,
                                                               DEVNAME,
                                                               DEVVERSIONSTRING,
                                                               (APTR)dev_init_tags};

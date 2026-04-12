@@ -2,10 +2,8 @@
 #define VERSION_H
 
 /* Individual version components */
-#define DEVICE_VERSION 1
+#define DEVICE_VERSION 53
 #define DEVICE_REVISION 8
-#define DEVICE_DATE "11.04.2026"
-#define DEVICE_TIME "12:00"
 #define DEVNAME "virtioscsi.device"
 
 /* Helper macros for stringification */
@@ -17,15 +15,27 @@
 #define DEVREV DEVICE_REVISION
 
 /*
+ * Build date and time: passed from the Makefile via -DBUILD_DATE and
+ * -DBUILD_TIME so they reflect the actual build timestamp.  Falls back
+ * to the compiler's __DATE__ / __TIME__ if not defined.
+ */
+#ifndef BUILD_DATE
+#define BUILD_DATE __DATE__
+#endif
+#ifndef BUILD_TIME
+#define BUILD_TIME __TIME__
+#endif
+
+/*
  * Standard AmigaOS version string: $VER: name version.revision (date)
  * Combined using string literal concatenation.
  */
-#define DEVVERSIONSTRING DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) " (" DEVICE_DATE ")"
+#define DEVVERSIONSTRING DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) " (" BUILD_DATE ")"
 
 /*
  * Extended version string for serial debug output at boot.
  * Includes build time for distinguishing debug/release builds.
  */
-#define DEVVERSIONSTRING_FULL DEVVERSIONSTRING " [" DEVICE_TIME "]"
+#define DEVVERSIONSTRING_FULL DEVVERSIONSTRING " [" BUILD_TIME "]"
 
 #endif /* VERSION_H */
