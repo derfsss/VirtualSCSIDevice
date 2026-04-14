@@ -14,8 +14,8 @@ An AmigaOS 4.1 Final Edition device driver for VirtIO SCSI disks in QEMU virtual
 
 The driver auto-detects the best VirtIO transport for each QEMU machine type — no platform-specific QEMU configuration required. Tested on all three QEMU PowerPC machines:
 - **Pegasos2** (MV64361 bridge) — modern VirtIO 1.0 MMIO via `stwbrx`/`lwbrx` inline assembly
-- **AmigaOne** (Articia S bridge) — legacy VirtIO I/O port access
-- **SAM460ex** — legacy VirtIO I/O port access
+- **AmigaOne** (Articia S bridge) — modern MMIO from v1.9 onward (runtime workaround for a firmware 64-bit BAR programming bug); legacy I/O on older driver builds
+- **SAM460ex** — modern VirtIO 1.0 MMIO
 
 ---
 
@@ -62,6 +62,8 @@ Replace `image_file.img` with the path to your hard drive image file. You can at
 -drive file=second_disk.img,if=none,id=vd1,format=raw \
 -device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
 ```
+
+> **⚠️ Important:** The `format=` parameter must match your image file's actual format. Use `format=raw` for `.img` / `.raw` files and `format=qcow2` for `.qcow2` files. A mismatch (e.g. `format=raw` on a `.qcow2` file) causes silent boot failures — diskboot reads garbage from the disk and can't find a bootable partition.
 
 > **Note:** Existing Pegasos2 setups using `-device virtio-scsi-pci-non-transitional` continue to work. The transitional device (`virtio-scsi-pci`) is recommended because it works on all machines without changes.
 
@@ -119,6 +121,64 @@ virtioscsi.device 8 3
 ```
 
 4. Save and reboot. The driver will be resident in memory from the very start of the boot process, and VirtIO SCSI disks can be used as boot drives.
+
+---
+
+## Hot-plug and CD media change (v1.9+)
+
+From v1.9 the driver subscribes to the VirtIO event queue and reacts to live device changes coming from the QEMU monitor. No reboot required, no manual rescan needed.
+
+### Adding a disk at runtime
+
+Attach a new VirtIO SCSI disk while AmigaOS is running:
+
+```
+# in the QEMU monitor (Ctrl-Alt-2, or via -monitor ...):
+(qemu) drive_add 0 file=/path/to/extra.qcow2,if=none,id=extra,format=qcow2
+(qemu) device_add scsi-hd,drive=extra,bus=scsi0.0,channel=0,scsi-id=1,lun=0
+```
+
+The driver receives `VIRTIO_SCSI_T_TRANSPORT_RESET` with reason `RESCAN`, INQUIRY-probes the new target/LUN, allocates a unit in the first free `units[]` slot, and announces it to `mounter.library` with the DOS-name prefix hint `VSCSI`. A new `VSCSI<n>:` icon appears on the Workbench (or the disk's RDB volume name if it has one), and the AmigaOS mounter performs partition discovery in its own context.
+
+If `mounter.library` is unavailable for any reason, the unit is still reachable via `OpenDevice("virtioscsi.device", N, ...)` — only the auto-mount step is skipped.
+
+### Removing a disk at runtime
+
+```
+(qemu) device_del extra
+```
+
+The driver receives `RESET_REMOVED`, marks the unit's media as no longer present, wakes any held `TD_ADDCHANGEINT` so listeners can react, and calls `DenounceDevice` so `mounter.library` tears down the DOSNode. The unit slot is kept allocated so a subsequent `RESET_RESCAN` on the same target/LUN re-uses the same unit number (per the AmigaOS DOSNode lifetime rules).
+
+### Changing a CD/DVD
+
+Eject and insert media without disturbing the unit:
+
+```
+(qemu) eject scsi0-0-0-0
+(qemu) change scsi0-0-0-0 file=/path/to/new.iso
+```
+
+The driver receives `VIRTIO_SCSI_T_PARAM_CHANGE` with ASC `0x3A` (medium not present) on eject and `0x28` (medium may have changed) on insert. For each event it:
+
+- Bumps the unit's `change_count` (visible to filesystems via `TD_CHANGENUM`)
+- Updates `media_present` (`TD_CHANGESTATE` reads it)
+- Invalidates cached geometry (next access re-runs `READ CAPACITY`)
+- Replies to any held `TD_ADDCHANGEINT` so `CDFileSystem` (or whichever filesystem holds it) wakes up and re-mounts
+
+In the serial debug log you'll see lines like:
+
+```
+PARAM_CHANGE T0 L1: medium ejected (asc=3A ascq=00)
+waking changeint on T0 L1 (ejected, count=1)
+PARAM_CHANGE T0 L1: medium inserted (asc=28 ascq=00)
+waking changeint on T0 L1 (inserted, count=2)
+```
+
+### What the driver does NOT do
+
+- It does not write the new disk's RDB or auto-create partitions for a brand-new blank disk — `MediaToolbox` is still the right tool for that.
+- It does not generate hot-plug events on platforms without the VirtIO event queue. If the device only offers legacy I/O transport, hot-plug discovery falls back to "next reboot" because legacy QEMU doesn't propagate transport-reset events through the legacy SCSI interface.
 
 ---
 
@@ -206,9 +266,23 @@ tests/
 
 ## Changelog
 
-### v53.8 — 2026-04-12
-- **Boot drive support**: VirtIO SCSI disks can now be used as boot drives. Resident priority changed to 0 (matching other disk device drivers). Added `diskboot.config` registration instructions. Major version bumped to 53 (matching AmigaOS 4.1 FE SDK device driver convention).
-- **Build**: Dynamic build date/time stamps via Makefile (`-DBUILD_DATE` / `-DBUILD_TIME`).
+### v1.9 — 2026-04-14
+- **Modern VirtIO MMIO on AmigaOne**: Runtime workaround in `pci_discovery.c` for a 64-bit BAR firmware bug. Before v1.9, BAR4's upper 32 bits were left at `0xFFFFFFFF` on AmigaOne (BBoot doesn't program the high DWORD and AmigaOS's PCI enumerator leaves it at the probe value), so VirtIO's prefetchable MMIO region ended up outside Articia's decoded PCI memory window. The driver now reads BAR5 at device discovery; if it reads `0xFFFFFFFF`, it writes 0 back via PCI config before calling `GetResourceRange(4)`. Root cause isolated via QEMU 10.2.2 `info pci`/`info mtree` compared across Pegasos2 (VOF programs BAR5=0) and AmigaOne (no firmware runs before BBoot). AmigaOne now uses the ~10–20× faster modern MMIO transport.
+- **VIRTIO_RING_F_INDIRECT_DESC** (bit 28): Accepted on the modern MMIO path. Scatter-gather chains now consume a single vring descriptor regardless of SG count, eliminating descriptor pressure at high inflight depth. Fixed byte-swap bugs in the existing indirect implementation (indirect-table writes now wrap through `vr64`/`vr32`/`vr16`, matching negotiated endianness; free-list `next` captured before overwrite) and added NEXT chaining between table entries. Disabled on the legacy I/O path (where QEMU reads indirect entries as LE while PPC writes native BE) and on VQ1 (eventq, single-region buffers).
+- **VIRTIO_SCSI_F_HOTPLUG / F_CHANGE** (bits 1, 2): Event queue (VQ1) now carries asynchronous device events. A dedicated consumer task (priority 20) drains VQ1 on ISR signal, parses events, and re-posts buffers.
+- **CD / DVD media change**: `PARAM_CHANGE` with ASC `0x28` (medium inserted) or `0x3A` (medium not present) now bumps the per-unit change counter, toggles `media_present`, invalidates cached geometry, and replies to any held `TD_ADDCHANGEINT`. `TD_CHANGENUM` returns the per-unit counter, `TD_CHANGESTATE` reports actual disc presence. `TRANSPORT_RESET/RESCAN` on an existing unit is treated the same way (media inserted path), `TRANSPORT_RESET/REMOVED` mirrors eject. Full round-trip verified with `(qemu) eject`/`change` — CDFileSystem automatically remounts without reboot.
+- **Phase 10 mounter integration**: Hot-added disks (`device_add scsi-hd …` in QEMU) are announced to `mounter.library` via `AnnounceDeviceTags` with DOS-name prefix hint `VSCSI`, so the disk appears on the Workbench without a reboot. Removal (`device_del`) triggers `DenounceDevice`. New module `src/virtio/virtio_mounter.c` owns the library handle with lazy open (first hot-add only, never at boot to avoid the priority-0 crash pattern), per-unit `announced` flag for ownership tracking, and a cleanup pass in `_manager_Expunge` that denounces any still-announced units before dropping the interface and closing the library. Non-fatal if `mounter.library` is unavailable — units remain reachable via `OpenDevice`.
+- **No Forbid/Permit pairs** in new code: event task receives `libBase` via `AT_Param1` on `CreateTaskTags` instead of the `tc_UserData` shuffle. Shutdown is a proper cross-task signal handshake (caller `AllocSignal`s a bit in its own context and `Wait`s; worker signals on exit).
+- **Shell-run diagnostic**: `_start()` prints `"virtioscsi.device cannot be executed from a shell …"` via `IExec->DebugPrintF` and returns 20 (`RETURN_FAIL`) instead of silently returning 0.
+- **Version renumbered**: major version returns to 1.x (v1.8 → v1.9). Boot drive support is provided by resident priority 0 and the `diskboot.config` entry, not by the major version number.
+
+### v53.8 — 2026-04-14
+- **Boot drive support**: VirtIO SCSI disks can now be used as boot drives. Resident priority changed to 0 (matching other AmigaOS disk device drivers like a1ide.device, peg2ide.device). Major version bumped to 53 (matching AmigaOS 4.1 FE SDK device driver convention). Tested as boot drive on AmigaOne, Pegasos2, and SAM460ex.
+- **MediaToolbox crash fix**: Removed explicit `IMounter->AnnounceDeviceTags()` call from `unit_discovery.c`. With priority 0, mounter.library is not yet initialised when our driver loads, so this call corrupted state and caused MediaToolbox to crash (`ramlib.support` DSI in `dos.library`). The driver now matches the standard AmigaOS disk driver pattern — `diskboot.kmod` handles all DOSNode creation via the `diskboot.config` entry.
+- **Installation**: `diskboot.config` entry `virtioscsi.device 8 3` and `MODULE Kickstart/virtioscsi.device` placement before `diskboot.config`/`diskboot.kmod` in Kicklayout are required for boot capability.
+- **Binary size**: Reduced from 82KB to 41KB. Linker flags `-Wl,-z,common-page-size=4096 -Wl,-z,max-page-size=4096` collapse 28KB of section padding; `ppc-amigaos-strip --strip-all` removes 12KB of symbol/debug tables. Strip is automatically skipped when `-DDEBUG` is defined so debug builds keep their symbols. The release LHA now includes both `virtioscsi.device` (41KB stripped) and `virtioscsi.device.debug` (83KB unstripped) for diagnostics.
+- **Build**: Dynamic build date/time stamps via Makefile (`-DBUILD_DATE` / `-DBUILD_TIME`). The boot serial output now shows the build timestamp: `virtioscsi.device 53.8 (DD.MM.YYYY) [HH:MM]`.
+- **Documentation**: Added warning about matching QEMU `format=` parameter to actual image file format (raw vs qcow2). Mismatch causes silent boot failures.
 
 ### v1.8 — 2026-04-11
 - **Unified QEMU platform support**: Single `-device virtio-scsi-pci` works on all QEMU machines (AmigaOne, Pegasos2, SAM460ex). MMIO probe at boot auto-detects modern vs legacy transport — no platform-specific QEMU configuration required. Tested on all three machines.

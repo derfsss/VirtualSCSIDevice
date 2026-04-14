@@ -1,10 +1,14 @@
 CC = ppc-amigaos-gcc
+STRIP = ppc-amigaos-strip
 BUILD_DATE := $(shell date +"%d.%m.%Y")
 BUILD_TIME := $(shell date +"%H:%M")
 CFLAGS = -O2 -Wall -Wextra -Wshadow -Wformat=2 -I./include -fno-tree-loop-distribute-patterns \
          -DBUILD_DATE='"$(BUILD_DATE)"' -DBUILD_TIME='"$(BUILD_TIME)"'
 DEPFLAGS = -MMD -MP
-LDFLAGS = -nostartfiles
+# -Wl,-z,common-page-size=4096 -Wl,-z,max-page-size=4096 reduces wasted
+# zero-padding between sections from 64KB-aligned to 4KB-aligned (~28KB
+# saved on the final binary).
+LDFLAGS = -nostartfiles -Wl,-z,common-page-size=4096 -Wl,-z,max-page-size=4096
 
 DOCKER_IMAGE = walkero/amigagccondocker:os4-gcc11
 DOCKER_RUN   = docker run --rm -v "$(shell pwd):/work" -w /work $(DOCKER_IMAGE)
@@ -28,7 +32,8 @@ SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c
       src/ns_cmds/ns_td_getgeometry64.c src/ns_cmds/ns_td_io64.c \
       src/pci/pci_discovery.c src/pci/pci_modern_detect.c \
       src/virtio/virtio_init.c src/virtio/virtqueue.c \
-      src/virtio/virtio_irq.c src/virtio/virtio_scsi_io.c
+      src/virtio/virtio_irq.c src/virtio/virtio_scsi_io.c \
+      src/virtio/virtio_events.c src/virtio/virtio_mounter.c
 
 OBJ = $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(SRC))
 DEP = $(OBJ:.o=.d)
@@ -42,6 +47,12 @@ $(BUILD_DIR):
 
 $(TARGET): $(OBJ)
 	$(CC) $(OBJ) -o $(TARGET) $(LDFLAGS)
+	@if echo "$(CFLAGS)" | grep -q -- '-DDEBUG'; then \
+		echo "Debug build — keeping symbols and debug info"; \
+	else \
+		echo "Stripping release build..."; \
+		$(STRIP) --strip-all $(TARGET); \
+	fi
 
 $(BUILD_DIR)/test_virtioscsi: tests/test_virtioscsi.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@ -lauto

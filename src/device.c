@@ -58,5 +58,19 @@ static const struct Resident dev_res __attribute__((used)) = {RTC_MATCHWORD,
 
 int _start(char *argstring, int arglen, struct ExecBase *sysbase)
 {
-    return 0; // Prevent running as a shell command
+    /*
+     * virtioscsi.device is a Kickstart-resident device driver.  It is loaded
+     * by the system at boot via its Resident structure and receives control
+     * through _manager_Init(), not a shell entry point.  If a user runs it
+     * from a shell, print a short diagnostic via DebugPrintF (no dos.library
+     * opening required) and return failure so the shell reports it properly.
+     */
+    (void)argstring;
+    (void)arglen;
+
+    struct ExecIFace *IExec = (struct ExecIFace *)sysbase->MainInterface;
+    IExec->DebugPrintF("%s cannot be executed from a shell — install in SYS:Kickstart/ "
+                       "(with MODULE and diskboot.config entries) and reboot.\n",
+                       DEVNAME);
+    return 20; /* RETURN_FAIL */
 }

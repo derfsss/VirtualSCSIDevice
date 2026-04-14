@@ -100,7 +100,10 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     case TD_CHANGENUM:
-        ioreq->io_Actual = 0; /* change count: 0 = disk never changed */
+        /* Monotonic change counter.  Incremented by the event-queue
+         * handler on every PARAM_CHANGE / TRANSPORT_RESET concerning this
+         * unit.  Filesystems read this to detect missed changes. */
+        ioreq->io_Actual = unit ? unit->change_count : 0;
         ioreq->io_Error = 0;
         if (ioreq->io_Flags & IOF_QUICK)
             return;
@@ -108,7 +111,11 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     case TD_CHANGESTATE:
-        ioreq->io_Actual = 0; /* 0 = disk present */
+        /* 0 = disk present, 1 = no disk.  Updated by CD insert/eject
+         * events from the VirtIO event queue (VIRTIO_SCSI_T_PARAM_CHANGE
+         * with ASC 0x28/0x3A, or TRANSPORT_RESET RESCAN/REMOVED on an
+         * existing LUN). */
+        ioreq->io_Actual = (unit && unit->media_present) ? 0 : 1;
         ioreq->io_Error = 0;
         if (ioreq->io_Flags & IOF_QUICK)
             return;

@@ -41,6 +41,32 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     DPRINTF(IExec, "[virtioscsi:pci_discovery.c] PCI_Discovery: Found VirtIO SCSI (%04x:%04x) at %02x:%02x.%u\n",
             vendor, devid, (unsigned int)bus, (unsigned int)dev, (unsigned int)fn);
 
+    /* AmigaOne firmware-chain workaround for 64-bit BAR high DWORD.
+     *
+     * On AmigaOne with QEMU 10.2.2, the VirtIO modern MMIO BAR (BAR4) is
+     * a 64-bit prefetchable memory BAR.  BBoot does not write to the high
+     * DWORD, and AmigaOS's later PCI enumerator performs a classic sizing
+     * probe (write 0xffffffff, read size, write address back) but fails to
+     * write 0 back to the high DWORD.  Result: BAR5 (config offset 0x24)
+     * sits at 0xffffffff, placing BAR4 at 0xffffffff84204000 — outside
+     * Articia's decoded PCI memory window, so MMIO reads return 0xff and
+     * writes are dropped.
+     *
+     * Fix it at the source: read BAR5; if it's 0xffffffff, write 0 back.
+     * This must happen BEFORE GetResourceRange(4) so the AmigaOS PCI
+     * library reads a sane high DWORD when computing the BAR's CPU-visible
+     * address.  Pegasos2 / SAM460ex are unaffected (VOF programs BAR5=0).
+     */
+    uint32 bar5 = device->ReadConfigLong(0x24);
+    if (bar5 == 0xFFFFFFFFUL) {
+        DPRINTF(IExec,
+                "[virtioscsi:pci_discovery.c] BAR5 high DWORD is 0xffffffff (AmigaOne PCI probe bug), zeroing.\n");
+        device->WriteConfigLong(0x24, 0);
+        uint32 bar5_after = device->ReadConfigLong(0x24);
+        DPRINTF(IExec,
+                "[virtioscsi:pci_discovery.c] BAR5 after fix: 0x%08lX\n", (unsigned long)bar5_after);
+    }
+
     /* Fetch BAR 0 (I/O) and BAR 4 (MMIO) */
     libBase->pciDevice = device;
     libBase->bar0 = device->GetResourceRange(0);

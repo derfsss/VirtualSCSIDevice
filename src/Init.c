@@ -1,5 +1,6 @@
 #include "pci/pci_discovery.h"
 #include "unit_discovery.h"
+#include "virtio/virtio_events.h"
 #include "virtio/virtio_init.h"
 #include "virtio/virtio_irq.h"
 #include "virtioscsi.h"
@@ -91,6 +92,10 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
 
     /* Scan SCSI targets and announce to mounter.library */
     DiscoverUnits(devBase);
+
+    /* Start VirtIO event queue (HOTPLUG + PARAM_CHANGE).  Non-fatal: if it
+     * fails to start, static discovery still provides the boot-time disks. */
+    InitEventQueue(devBase);
 
     DPRINTF(iexec, "[virtioscsi:Init.c] Init: Device library initialized and public.\n");
 

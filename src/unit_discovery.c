@@ -1,31 +1,24 @@
 #include "unit_discovery.h"
 #include "virtio/virtio_scsi_io.h"
-#include <interfaces/mounter.h>
-#include <libraries/mounter.h>
 
 /*
  * Scan SCSI targets 0-7, LUNs 0-7 via INQUIRY.
- * Allocates unit structs and announces to mounter.library for automounting.
+ * Allocates unit structs and stores them in devBase->units[].
+ *
+ * Partition discovery and DOSNode creation are handled by diskboot.kmod
+ * (which scans devices listed in diskboot.config).  This driver does NOT
+ * call mounter.library directly — that approach was incompatible with
+ * resident priority 0 (mounter is initialised later).  Standard AmigaOS
+ * disk drivers (a1ide.device, peg2ide.device, etc.) follow the same
+ * pattern: discover units, register the device, let diskboot do the rest.
  */
 uint32 DiscoverUnits(struct VirtIOSCSIBase *devBase)
 {
     struct ExecIFace *iexec = devBase->IExec;
 
-    struct Library *MounterBase = iexec->OpenLibrary("mounter.library", 0);
-    struct MounterIFace *IMounter = NULL;
-    if (MounterBase) {
-        IMounter = (struct MounterIFace *)iexec->GetInterface(MounterBase, "main", 1, NULL);
-    } else {
-        DPRINTF(iexec, "[virtioscsi:unit_discovery.c] WARNING - mounter.library not found! Automounting may fail.\n");
-    }
-
     uint8 *inqData = iexec->AllocVecTags(36, AVT_Type, MEMF_SHARED, AVT_ClearWithValue, 0, TAG_END);
     if (!inqData) {
         DPRINTF(iexec, "[virtioscsi:unit_discovery.c] Failed to allocate INQUIRY buffer\n");
-        if (IMounter)
-            iexec->DropInterface((struct Interface *)IMounter);
-        if (MounterBase)
-            iexec->CloseLibrary(MounterBase);
         return 0;
     }
 
@@ -79,12 +72,10 @@ uint32 DiscoverUnits(struct VirtIOSCSIBase *devBase)
                     unit->unit_num = units_found;
                     unit->target_id = t;
                     unit->lun_id = l;
+                    unit->media_present = TRUE; /* assumed present at discovery */
                     devBase->units[units_found] = unit;
-
-                    if (IMounter) {
-                        DPRINTF(iexec, "[virtioscsi:unit_discovery.c] Announcing unit %lu to mounter\n", units_found);
-                        IMounter->AnnounceDeviceTags(DEVNAME, units_found, TAG_END);
-                    }
+                    DPRINTF(iexec, "[virtioscsi:unit_discovery.c] Registered unit %lu (T%lu L%lu)\n",
+                            units_found, t, l);
                     units_found++;
                 }
             }
@@ -92,10 +83,6 @@ uint32 DiscoverUnits(struct VirtIOSCSIBase *devBase)
     }
 
     iexec->FreeVec(inqData);
-    if (IMounter)
-        iexec->DropInterface((struct Interface *)IMounter);
-    if (MounterBase)
-        iexec->CloseLibrary(MounterBase);
 
     if (units_found == 0) {
         DPRINTF(iexec, "[virtioscsi:unit_discovery.c] No drives found during scan.\n");

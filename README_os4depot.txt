@@ -1,6 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 53.8 - 12 April 2026
+Version 1.9 - 14 April 2026
 Author: derfsss
 Source: https://github.com/derfsss/VirtualSCSIDevice
 
@@ -60,6 +60,12 @@ pairs (up to 8 targets):
 
   -drive file=second_disk.img,if=none,id=vd1,format=raw \
   -device scsi-hd,drive=vd1,bus=scsi0.0,channel=0,scsi-id=1,lun=1
+
+IMPORTANT: The format= parameter must match your image file's actual
+format. Use format=raw for .img/.raw files and format=qcow2 for
+.qcow2 files. A mismatch (e.g. format=raw on a .qcow2 file) causes
+silent boot failures - diskboot reads garbage from the disk and
+can't find a bootable partition.
 
 Note: Existing Pegasos2 setups using
 -device virtio-scsi-pci-non-transitional continue to work. The
@@ -164,12 +170,63 @@ Source code: https://github.com/derfsss/VirtualSCSIDevice
 CHANGELOG
 ---------
 
-v53.8 (12.04.2026)
+v1.9 (14.04.2026)
+  - Modern VirtIO MMIO on AmigaOne: runtime workaround in pci_discovery.c
+    for a 64-bit BAR firmware bug. Before v1.9, BAR4's high DWORD was
+    left at 0xFFFFFFFF on AmigaOne (BBoot doesn't program it and
+    AmigaOS's PCI enumerator leaves it at the probe value), putting the
+    MMIO BAR outside Articia's PCI memory window. The driver now reads
+    BAR5 at discovery and writes 0 back if it reads 0xFFFFFFFF. AmigaOne
+    now uses the ~10-20x faster modern MMIO transport.
+  - VIRTIO_RING_F_INDIRECT_DESC accepted on modern path: scatter-gather
+    chains consume one vring descriptor regardless of SG count. Fixed
+    byte-swap bugs in the indirect-table writes.
+  - VIRTIO_SCSI_F_HOTPLUG / F_CHANGE accepted: event queue (VQ1) now
+    carries async device events. A consumer task drains events and
+    handles TRANSPORT_RESET (rescan/removed), PARAM_CHANGE (media or
+    size change), and ASYNC_NOTIFY.
+  - CD / DVD media change: PARAM_CHANGE events with ASC 0x28 (medium
+    inserted) or 0x3A (medium not present) bump the per-unit change
+    counter, toggle media_present, invalidate cached geometry, and wake
+    any held TD_ADDCHANGEINT. TD_CHANGENUM and TD_CHANGESTATE now report
+    real values. Use (qemu) eject/change scsi0-0-0-0 to swap CDs live.
+  - Phase 10 mounter integration: hot-added disks (device_add scsi-hd
+    in QEMU monitor) are announced to mounter.library, so the disk
+    appears on the Workbench without a reboot. Removal (device_del)
+    triggers DenounceDevice. mounter is opened lazily on first hot-add
+    (never at boot, to avoid the old MediaToolbox crash) and closed in
+    Expunge after denouncing any remaining units. Non-fatal if mounter
+    is unavailable -- units stay reachable via OpenDevice.
+  - Shell-run diagnostic: _start() now prints an error via
+    IExec->DebugPrintF and returns RETURN_FAIL (20) instead of 0.
+  - Version renumbered: v53.8 -> v1.9. Boot drive support is unchanged
+    (resident priority 0 + diskboot.config entry "virtioscsi.device 8 3").
+
+v53.8 (14.04.2026)
   - Boot drive support: VirtIO SCSI disks can now be used as boot
-    drives. Resident priority changed to 0 (matching other disk device
-    drivers). diskboot.config registration documented. Major version
-    bumped to 53 (AmigaOS 4.1 FE SDK convention).
-  - Build: dynamic build date/time stamps via Makefile.
+    drives. Resident priority changed to 0 (matching other AmigaOS
+    disk drivers like a1ide.device, peg2ide.device). Major version
+    bumped to 53 (AmigaOS 4.1 FE SDK convention). Tested as boot
+    drive on AmigaOne, Pegasos2, and SAM460ex.
+  - MediaToolbox crash fix: removed explicit mounter.library
+    AnnounceDeviceTags() call from unit_discovery.c. With priority 0,
+    mounter is not yet initialised when our driver loads, so the call
+    corrupted state. Driver now matches the standard AmigaOS disk
+    driver pattern - diskboot.kmod handles all DOSNode creation via
+    the diskboot.config entry.
+  - Installation: requires diskboot.config entry "virtioscsi.device 8 3"
+    AND MODULE Kickstart/virtioscsi.device line BEFORE diskboot.config
+    and diskboot.kmod entries in the Kicklayout file.
+  - Binary size: reduced from 82KB to 41KB. Linker flags collapse 28KB
+    of section padding; strip removes 12KB of symbol/debug tables.
+    Strip auto-skipped for debug builds. The release LHA includes both
+    virtioscsi.device (41KB stripped) and virtioscsi.device.debug (83KB
+    unstripped) for diagnostics.
+  - Build: dynamic build date/time stamps via Makefile. Boot serial
+    output shows: virtioscsi.device 53.8 (DD.MM.YYYY) [HH:MM]
+  - Documentation: added warning about matching QEMU format= parameter
+    to actual image file format (raw vs qcow2). Mismatch causes silent
+    boot failures.
 
 v1.8 (11.04.2026)
   - Unified platform: single -device virtio-scsi-pci works on all QEMU

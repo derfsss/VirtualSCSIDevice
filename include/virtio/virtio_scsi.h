@@ -33,4 +33,32 @@
 #define VIRTIO_SCSI_F_CHANGE 2
 #define VIRTIO_SCSI_F_T10_PI 3
 
+/*
+ * VirtIO SCSI event queue (VQ1) entry — 16 bytes, device-writable.
+ * Spec: each event posted by the device describes one asynchronous event
+ * on a target/LUN.  All fields little-endian in modern mode; native in
+ * legacy.  The device writes exactly one struct per completed buffer.
+ */
+struct virtio_scsi_event
+{
+    uint32 event;    /* VIRTIO_SCSI_T_* */
+    uint8  lun[8];   /* SAM LUN: lun[0]=1, lun[1]=target_id, lun[2..3]=lun_id, rest=0 */
+    uint32 reason;   /* VIRTIO_SCSI_EVT_* */
+} __attribute__((packed));
+
+/* Event type codes */
+#define VIRTIO_SCSI_T_NO_EVENT          0
+#define VIRTIO_SCSI_T_TRANSPORT_RESET   1
+#define VIRTIO_SCSI_T_ASYNC_NOTIFY      2
+#define VIRTIO_SCSI_T_PARAM_CHANGE      3
+
+/* Event "events lost" marker bit — set by device in the event field when
+ * buffers were not available and one or more events were dropped. */
+#define VIRTIO_SCSI_T_EVENTS_MISSED     0x80000000
+
+/* Reason codes for VIRTIO_SCSI_T_TRANSPORT_RESET */
+#define VIRTIO_SCSI_EVT_RESET_HARD      0  /* full device reset, re-probe all */
+#define VIRTIO_SCSI_EVT_RESET_RESCAN    1  /* new target/LUN appeared — probe it */
+#define VIRTIO_SCSI_EVT_RESET_REMOVED   2  /* target/LUN removed — drop it */
+
 #endif /* VIRTIO_SCSI_H */
