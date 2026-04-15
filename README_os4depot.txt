@@ -203,11 +203,18 @@ v1.9 (14.04.2026)
     (resident priority 0 + diskboot.config entry "virtioscsi.device 8 3").
 
 v53.8 (14.04.2026)
-  - Boot drive support: VirtIO SCSI disks can now be used as boot
-    drives. Resident priority changed to 0 (matching other AmigaOS
-    disk drivers like a1ide.device, peg2ide.device). Major version
-    bumped to 53 (AmigaOS 4.1 FE SDK convention). Tested as boot
-    drive on AmigaOne, Pegasos2, and SAM460ex.
+  - Boot drive support: VirtIO SCSI disks can be used as boot drives
+    when booting via BBoot (loads Kickstart from memory so the
+    firmware does not need a virtio-scsi driver). Resident priority
+    changed to 0 (matching a1ide.device, peg2ide.device).  Major
+    version bumped to 53 (AmigaOS 4.1 FE SDK convention). Tested
+    with BBoot on AmigaOne, Pegasos2, and SAM460ex.
+
+    NOTE: Real Pegasos2 firmware (pegasos2.rom) does not know about
+    virtio-scsi-pci and cannot select it as a boot target. On that
+    setup boot AmigaOS from a small IDE (or NVMe) disk, and the
+    virtio-scsi disks will be mounted as secondary devices once the
+    driver loads.
   - MediaToolbox crash fix: removed explicit mounter.library
     AnnounceDeviceTags() call from unit_discovery.c. With priority 0,
     mounter is not yet initialised when our driver loads, so the call

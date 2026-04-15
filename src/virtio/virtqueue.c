@@ -340,8 +340,24 @@ void VirtQueue_Kick(struct ExecIFace *IExec, struct virtqueue *vq, struct PCIDev
  */
 void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *len_out)
 {
-    /* Memory barrier: read used->idx after device writes */
-    __asm__ volatile("lwsync" ::: "memory");
+    /* Memory barrier: read used->idx after device writes.
+     *
+     * Must be a base-ISA barrier that is implemented on every PowerPC
+     * variant AmigaOS 4.1 FE runs on:
+     *   - AmigaOne  (G3/G4, classic PowerPC)     — sync ✓, lwsync optional
+     *   - Pegasos2  (G4 7457, classic PowerPC)   — sync ✓, lwsync ✓
+     *   - SAM460ex  (PPC 440, Book-E)            — sync ✓, lwsync *absent*
+     *
+     * lwsync is an optional Power ISA Book II instruction; on PPC 440 it
+     * is not part of the defined instruction set and may trap or be
+     * silently remapped to sync depending on the implementation.  Using
+     * sync is architecturally safe on all three cores and costs only an
+     * extra ~10-40 cycles here — invisible against the MMIO latency the
+     * caller is already paying to read the used ring.  The load-before-
+     * load ordering we actually need (read used->idx after the device
+     * wrote it) is provided by both; sync is simply the universally
+     * available form. */
+    __asm__ volatile("sync" ::: "memory");
 
     if (vq->last_used_idx == vr16(vq->modern, vq->used->idx))
         return NULL;
