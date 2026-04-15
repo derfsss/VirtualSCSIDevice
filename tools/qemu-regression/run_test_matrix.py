@@ -40,6 +40,23 @@ TEST_INQUIRY = "/mnt/w/Code/amiga/antigravity/projects/VirtualSCSIDevice/build/t
 SCSI_RAW = "/mnt/e/Emulators/QEMU/QEMU_Machines/scsi.raw"
 RUNNER_PY = "/mnt/w/Code/amiga/antigravity/projects/tools/qemu-runner"
 
+# 9P shared folder — mounted into every guest as SHARED: via virtio-9p-pci.
+# Gives the stress suite a fast host↔guest transport that bypasses
+# SerialShell's TCP upload/download for future bulk-transfer tests.
+# The folder itself is created by ensure_p9share() before any run.
+P9_SHARE = "/tmp/p9share"
+VIRTIO9P_HANDLER = "/mnt/w/Code/amiga/antigravity/projects/VirtIO9P/build/Virtio9PFS-handler"
+
+
+def ensure_p9share() -> None:
+    """Create /tmp/p9share (if absent) and drop a canary file the Tier 5.5
+    9P-mount test looks for.  Idempotent; safe to call on every run."""
+    os.makedirs(P9_SHARE, exist_ok=True)
+    canary = os.path.join(P9_SHARE, "host_says_hi.txt")
+    if not os.path.exists(canary):
+        with open(canary, "w") as f:
+            f.write("host canary v1.9 tests\n")
+
 MACHINES = {
     "a1": {
         "name": "AmigaOne",
@@ -228,6 +245,11 @@ def build_qemu_cmd(m: dict) -> list[str]:
             "-drive", f"file={SCSI_RAW},if=none,id=vd0,format=raw,snapshot=on",
             "-device", "scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0"]
 
+    # virtio-9p share — tagged SHARED, backed by /tmp/p9share on the host.
+    # Tier 5.5 mounts it via Virtio9PFS-handler and verifies the canary file.
+    cmd += ["-virtfs",
+            f"local,path={P9_SHARE},mount_tag=SHARED,security_model=none,id=share0"]
+
     return cmd
 
 
@@ -381,6 +403,9 @@ def main():
     ap.add_argument("--driver", default=DRIVER_DEBUG,
                     help="path to virtioscsi.device to inject")
     args = ap.parse_args()
+
+    # Make sure the 9P share exists before any guest tries to mount it.
+    ensure_p9share()
 
     keys = [k.strip() for k in args.machines.split(",") if k.strip()]
     results = {}
