@@ -38,7 +38,6 @@ BBOOT_SRC = "/mnt/c/Users/rich_/.kyvos/bboot"
 DRIVER_DEBUG = "/mnt/w/Code/amiga/antigravity/projects/VirtualSCSIDevice/build/virtioscsi.device"
 TEST_INQUIRY = "/mnt/w/Code/amiga/antigravity/projects/VirtualSCSIDevice/build/test_inquiry"
 SCSI_RAW = "/mnt/e/Emulators/QEMU/QEMU_Machines/scsi.raw"
-USB_SHARE = "/mnt/s/temp"
 RUNNER_PY = "/mnt/w/Code/amiga/antigravity/projects/tools/qemu-runner"
 
 MACHINES = {
@@ -180,37 +179,26 @@ def build_qemu_cmd(m: dict) -> list[str]:
         cmd += ["-append", "serial debuglevel=1"]
 
     hd0 = os.path.join(wd, "hd0.qcow2")
-    work = os.path.join(wd, "work.qcow2")
 
+    # Only the boot disk is needed.  work.qcow2 and USB-FAT are not used by
+    # any stress test and cause write-lock contention if more than one run is
+    # live at once (work.qcow2 is shared across all three machines).  Keep
+    # the emulated hardware surface to the minimum that still boots AmigaOS
+    # cleanly.
     if m["qemu_machine"] == "sam460ex":
-        # Per user's Kyvos config.json: SAM460 uses two extra sii3112 HBAs
-        # (each adds an IDE bus), with:
-        #   ide.0  = motherboard IDE (boot disk hd0)
-        #   ide.1  = first  sii3112 (CD)
-        #   ide.2  = second sii3112 (work.qcow2)
-        # Boot disk alone is mandatory; work/CD are optional but included.
-        cmd += ["-device", "sii3112"]   # adds ide.1
-        if os.path.exists(work):
-            cmd += ["-device", "sii3112"]  # adds ide.2
-            cmd += ["-drive", f"if=none,id=hd1,file={work},format=qcow2",
-                    "-device", "ide-hd,unit=0,drive=hd1,bus=ide.2"]
-        cmd += ["-drive", "if=none,id=cd",
-                "-device", "ide-cd,unit=0,drive=cd,bus=ide.1"]
-        cmd += ["-drive", f"if=none,id=hd0,file={hd0},format=qcow2",
+        # SAM460 still needs ONE sii3112 because u-boot probes ide.1 for a CD.
+        # Without it, u-boot hangs at 'IDE: bus 1' during boot.
+        cmd += ["-device", "sii3112",
+                "-drive", "if=none,id=cd",
+                "-device", "ide-cd,unit=0,drive=cd,bus=ide.1",
+                "-drive", f"if=none,id=hd0,file={hd0},format=qcow2",
                 "-device", "ide-hd,unit=0,drive=hd0,bus=ide.0"]
     else:
-        # AmigaOne / Pegasos2: motherboard IDE with 2 units per bus
+        # AmigaOne / Pegasos2: motherboard IDE is enough on its own.
         cmd += ["-drive", f"if=none,id=hd0,file={hd0},format=qcow2",
-                "-device", "ide-hd,unit=0,drive=hd0,bus=ide.0"]
-        if os.path.exists(work):
-            cmd += ["-drive", f"if=none,id=hd1,file={work},format=qcow2",
-                    "-device", "ide-hd,unit=1,drive=hd1,bus=ide.0"]
-        cmd += ["-drive", "if=none,id=cd",
+                "-device", "ide-hd,unit=0,drive=hd0,bus=ide.0",
+                "-drive", "if=none,id=cd",
                 "-device", "ide-cd,unit=1,drive=cd,bus=ide.1"]
-
-    # USB FAT share (works on all three)
-    cmd += ["-drive", f"if=none,id=ufat,format=raw,file=fat:rw:{USB_SHARE}",
-            "-device", "usb-storage,drive=ufat"]
 
     # Network with hostfwd for SerialShell.  AmigaOne/Pegasos2 pin the NIC
     # to specific PCI slots via addr=; SAM460 doesn't.
@@ -334,14 +322,6 @@ def run_machine(key: str, driver_src: str) -> dict:
     m = MACHINES[key]
     log(f"==== {m['name']} ====")
     copy_source(m)
-    # work.qcow2 is shared — only copy once, reuse
-    work_shared = "/tmp/work.qcow2"
-    if not os.path.exists(work_shared):
-        log(f"[{m['name']}] copying work.qcow2 (shared) ...")
-        shutil.copy2("/mnt/e/Emulators/QEMU/QEMU_Machines/work.qcow2", work_shared)
-    work_dst = os.path.join(m["workdir"], "work.qcow2")
-    if not os.path.exists(work_dst):
-        os.symlink(work_shared, work_dst)
     update_kickstart(m, driver_src)
 
     cmd = build_qemu_cmd(m)

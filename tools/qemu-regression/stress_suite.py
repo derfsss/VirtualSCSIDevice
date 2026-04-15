@@ -53,6 +53,18 @@ def _size_of(out: str) -> int:
     return -1
 
 
+def _free_mem(c: SerialClient) -> int:
+    """Read 'avail' and return the Free value as int bytes (or -1 on parse fail)."""
+    out = run(c, "avail", timeout=10)
+    for line in out.splitlines():
+        if line.strip().startswith("Free:"):
+            try:
+                return int(line.split()[1].replace(",", ""))
+            except Exception:
+                return -1
+    return -1
+
+
 def header(title: str) -> None:
     print(f"\n============ {title} ============", flush=True)
 
