@@ -170,12 +170,20 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
                                 AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED, TAG_DONE);
 
         if (itbl) {
-            /* Fill the indirect table */
+            /* Fill the indirect table.  Entries are in device-visible memory
+             * so fields must match the negotiated endianness: modern = LE,
+             * legacy = native (BE on PPC). */
             for (n = 0; n < total; n++) {
-                itbl[n].addr  = (uint64)sg[n].addr;
-                itbl[n].len   = sg[n].len;
-                itbl[n].flags = (n >= out_num) ? VRING_DESC_F_WRITE : 0;
-                itbl[n].next  = 0; /* unused */
+                uint16 f = (n >= out_num) ? VRING_DESC_F_WRITE : 0;
+                /* Chain flag links consecutive table entries; the device walks
+                 * the table via `next` even though in practice many devices
+                 * accept a flat ordered list.  Set NEXT for all but the last. */
+                if (n < total - 1)
+                    f |= VRING_DESC_F_NEXT;
+                itbl[n].addr  = vr64(vq->modern, (uint64)sg[n].addr);
+                itbl[n].len   = vr32(vq->modern, sg[n].len);
+                itbl[n].flags = vr16(vq->modern, f);
+                itbl[n].next  = vr16(vq->modern, (uint16)(n + 1));
             }
 
             /* DMA-map the indirect table so the device can read it */
@@ -189,12 +197,18 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
                     uint32 itbl_phys = (uint32)itbl_dma[0].PhysicalAddress;
                     IExec->FreeSysObject(ASOT_DMAENTRY, itbl_dma);
 
-                    /* Place one descriptor in the vring */
-                    vq->desc[head].addr  = (uint64)itbl_phys;
-                    vq->desc[head].len   = itbl_size;
-                    vq->desc[head].flags = VRING_DESC_F_INDIRECT;
+                    /* Capture the pre-chained free-list link BEFORE overwriting
+                     * vq->desc[head].next with the indirect-descriptor format.
+                     * Free-list links are always stored native. */
+                    uint16 next_head = vq->desc[head].next;
+
+                    /* Place one descriptor in the vring pointing at the table.
+                     * Fields must match negotiated endianness (vr64/vr32/vr16). */
+                    vq->desc[head].addr  = vr64(vq->modern, (uint64)itbl_phys);
+                    vq->desc[head].len   = vr32(vq->modern, itbl_size);
+                    vq->desc[head].flags = vr16(vq->modern, VRING_DESC_F_INDIRECT);
                     vq->desc[head].next  = 0;
-                    vq->free_head = vq->desc[head].next;
+                    vq->free_head = next_head;
                     vq->num_free -= 1;
 
                     /* Save virtual address for cleanup in GetBuf */
@@ -202,10 +216,10 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
                     vq->indirect_tables[head] = (void *)itbl;
 
                     /* Add to available ring */
-                    uint16 avail_idx = vq->avail->idx;
-                    vq->avail->ring[avail_idx % vq->num] = head;
+                    uint16 avail_idx = vr16(vq->modern, vq->avail->idx);
+                    vq->avail->ring[avail_idx % vq->num] = vr16(vq->modern, head);
                     __asm__ volatile("eieio" ::: "memory");
-                    vq->avail->idx = avail_idx + 1;
+                    vq->avail->idx = vr16(vq->modern, (uint16)(avail_idx + 1));
                     return 0;
                 }
                 IExec->EndDMA(itbl, itbl_size, DMA_ReadFromRAM | DMAF_NoModify);
@@ -326,8 +340,24 @@ void VirtQueue_Kick(struct ExecIFace *IExec, struct virtqueue *vq, struct PCIDev
  */
 void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *len_out)
 {
-    /* Memory barrier: read used->idx after device writes */
-    __asm__ volatile("lwsync" ::: "memory");
+    /* Memory barrier: read used->idx after device writes.
+     *
+     * Must be a base-ISA barrier that is implemented on every PowerPC
+     * variant AmigaOS 4.1 FE runs on:
+     *   - AmigaOne  (G3/G4, classic PowerPC)     — sync ✓, lwsync optional
+     *   - Pegasos2  (G4 7457, classic PowerPC)   — sync ✓, lwsync ✓
+     *   - SAM460ex  (PPC 440, Book-E)            — sync ✓, lwsync *absent*
+     *
+     * lwsync is an optional Power ISA Book II instruction; on PPC 440 it
+     * is not part of the defined instruction set and may trap or be
+     * silently remapped to sync depending on the implementation.  Using
+     * sync is architecturally safe on all three cores and costs only an
+     * extra ~10-40 cycles here — invisible against the MMIO latency the
+     * caller is already paying to read the used ring.  The load-before-
+     * load ordering we actually need (read used->idx after the device
+     * wrote it) is provided by both; sync is simply the universally
+     * available form. */
+    __asm__ volatile("sync" ::: "memory");
 
     if (vq->last_used_idx == vr16(vq->modern, vq->used->idx))
         return NULL;

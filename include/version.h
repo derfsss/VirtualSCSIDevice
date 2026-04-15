@@ -2,8 +2,8 @@
 #define VERSION_H
 
 /* Individual version components */
-#define DEVICE_VERSION 53
-#define DEVICE_REVISION 8
+#define DEVICE_VERSION 1
+#define DEVICE_REVISION 9
 #define DEVNAME "virtioscsi.device"
 
 /* Helper macros for stringification */

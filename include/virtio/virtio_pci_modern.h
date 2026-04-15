@@ -51,10 +51,28 @@
  * only method that works on Pegasos2.  These macros were validated by
  * test_modern.c in build 1071.
  *
- * stwbrx/lwbrx perform atomic LE↔BE conversion in hardware.
- * stb/lbz are used for 8-bit registers (STATUS, config_generation).
- * mbar after writes ensures the PCI bridge sees the store before the
- * next instruction.
+ * Byte-swap: stwbrx/lwbrx/sthbrx/lhbrx perform atomic LE↔BE conversion
+ * in hardware; stb/lbz are used for 8-bit registers (STATUS,
+ * config_generation) since endianness does not apply to single bytes.
+ *
+ * Memory ordering:
+ *   - After writes: `eieio`.  PowerPC architecturally orders stores to
+ *     cache-inhibited-guarded (MMIO) memory regions among themselves via
+ *     `eieio`.  Earlier revisions of this header used `mbar`, which is a
+ *     Book-E (e500) mnemonic and is not a recognised instruction on the
+ *     74xx-class CPUs emulated for Pegasos2 and AmigaOne — QEMU treats
+ *     it as no-op or undefined, providing no guarantee that consecutive
+ *     MMIO writes reach the device in program order.  `eieio` is the
+ *     correct barrier for the class of CPUs we target.
+ *   - After reads: `eieio`.  Guarded loads are architecturally ordered
+ *     with each other, but `eieio` cheaply prevents the compiler or a
+ *     weakly-ordered CPU from hoisting a subsequent data access ahead
+ *     of the load that consumed a status/index register value.
+ *   - Cross-domain (cacheable RAM → MMIO or vice versa) ordering — for
+ *     example, making sure vring writes in cacheable memory are visible
+ *     to the device before the notify-register write — remains the
+ *     caller's responsibility and is handled via `sync` in
+ *     `VirtQueue_Kick`.
  *
  * The addr parameter is the physical BAR address (e.g. 0x84200000 + offset).
  * On Pegasos2 the MV64361 transparently maps PCI BAR physical addresses
@@ -69,7 +87,7 @@ static inline uint8 mmio_r8(struct PCIDevice *d, uint32 addr)
     (void)d;
     volatile uint8 *a = (volatile uint8 *)addr;
     uint8 r;
-    __asm__ volatile("lbz %0,0(%1)" : "=r"(r) : "r"(a) : "memory");
+    __asm__ volatile("lbz %0,0(%1); eieio" : "=r"(r) : "r"(a) : "memory");
     return r;
 }
 
@@ -77,7 +95,7 @@ static inline void mmio_w8(struct PCIDevice *d, uint32 addr, uint8 v)
 {
     (void)d;
     volatile uint8 *a = (volatile uint8 *)addr;
-    __asm__ volatile("stb %1,0(%0); mbar" : : "r"(a), "r"(v) : "memory");
+    __asm__ volatile("stb %1,0(%0); eieio" : : "r"(a), "r"(v) : "memory");
 }
 
 static inline uint16 mmio_r16(struct PCIDevice *d, uint32 addr)
@@ -85,7 +103,7 @@ static inline uint16 mmio_r16(struct PCIDevice *d, uint32 addr)
     (void)d;
     volatile uint16 *a = (volatile uint16 *)addr;
     uint16 r;
-    __asm__ volatile("lhbrx %0,0,%1" : "=r"(r) : "r"(a) : "memory");
+    __asm__ volatile("lhbrx %0,0,%1; eieio" : "=r"(r) : "r"(a) : "memory");
     return r;
 }
 
@@ -93,7 +111,7 @@ static inline void mmio_w16(struct PCIDevice *d, uint32 addr, uint16 v)
 {
     (void)d;
     volatile uint16 *a = (volatile uint16 *)addr;
-    __asm__ volatile("sthbrx %1,0,%0; mbar" : : "r"(a), "r"(v) : "memory");
+    __asm__ volatile("sthbrx %1,0,%0; eieio" : : "r"(a), "r"(v) : "memory");
 }
 
 static inline uint32 mmio_r32(struct PCIDevice *d, uint32 addr)
@@ -101,7 +119,7 @@ static inline uint32 mmio_r32(struct PCIDevice *d, uint32 addr)
     (void)d;
     volatile uint32 *a = (volatile uint32 *)addr;
     uint32 r;
-    __asm__ volatile("lwbrx %0,0,%1" : "=r"(r) : "r"(a) : "memory");
+    __asm__ volatile("lwbrx %0,0,%1; eieio" : "=r"(r) : "r"(a) : "memory");
     return r;
 }
 
@@ -109,7 +127,7 @@ static inline void mmio_w32(struct PCIDevice *d, uint32 addr, uint32 v)
 {
     (void)d;
     volatile uint32 *a = (volatile uint32 *)addr;
-    __asm__ volatile("stwbrx %1,0,%0; mbar" : : "r"(a), "r"(v) : "memory");
+    __asm__ volatile("stwbrx %1,0,%0; eieio" : : "r"(a), "r"(v) : "memory");
 }
 
 /*

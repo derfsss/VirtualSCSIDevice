@@ -434,12 +434,26 @@ void UnitTask_Entry(void)
     IExec->FreeSysObject(ASOT_PORT, unit->io_port);
     unit->io_port      = NULL;
     unit->io_port_mask = 0;
-    unit->task         = NULL;
-
     DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: unit %lu exiting\n", unit->unit_num);
 
-    /* Signal parent that we have fully shut down */
-    IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
+    /*
+     * Shutdown handshake: clear unit->task LAST (after all other teardown)
+     * so UnitTask_Shutdown's wait loop can safely detect "task has fully
+     * exited" by observing unit->task == NULL.
+     *
+     * Do NOT signal startMsg->parent_task here.  startMsg was stack-allocated
+     * in UnitTask_Start() and its storage was reclaimed the moment that
+     * function returned (at initial startup).  Dereferencing it now reads
+     * whatever value the caller's stack has since been reused for — typically
+     * harmless in debug builds because DPRINTF writes pad the caller's stack
+     * in a way that leaves parent_task readable-but-stale, but in release
+     * builds the stack has been fully recycled and Signal() ends up passing
+     * garbage to Exec's signal machinery, tripping a DSI deep inside
+     * dos.library.kmod the next time the system touches that memory (typically
+     * when the shell tries to fork another command).  UnitTask_Shutdown
+     * watches unit->task instead, so no exit signal is required.
+     */
+    unit->task = NULL;
 }
 
 /* -------------------------------------------------------------------------
