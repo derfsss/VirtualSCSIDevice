@@ -173,7 +173,7 @@ def update_kickstart(m: dict, driver_src: str) -> None:
         f"({os.path.getsize(driver_src):,} B)")
 
 
-def build_qemu_cmd(m: dict) -> list[str]:
+def build_qemu_cmd(m: dict, with_p9: bool = False) -> list[str]:
     """Construct QEMU command line per machine."""
     wd = m["workdir"]
     qemu_bin = os.path.join(wd, "qemu-ppc-myrun")
@@ -246,9 +246,14 @@ def build_qemu_cmd(m: dict) -> list[str]:
             "-device", "scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0"]
 
     # virtio-9p share — tagged SHARED, backed by /tmp/p9share on the host.
-    # Tier 5.5 mounts it via Virtio9PFS-handler and verifies the canary file.
-    cmd += ["-virtfs",
-            f"local,path={P9_SHARE},mount_tag=SHARED,security_model=none,id=share0"]
+    # Opt-in via --with-9p because the current shorthand -virtfs config
+    # breaks AmigaOS boot (the virtio-9p-pci device that QEMU auto-creates
+    # stalls the PCI scan somewhere before virtioscsi.device Init runs).
+    # Tier 5.5 mounts it via Virtio9PFS-handler and verifies the canary.
+    if with_p9:
+        cmd += ["-virtfs",
+                f"local,path={P9_SHARE},mount_tag=SHARED,"
+                "security_model=none,id=share0"]
 
     return cmd
 
@@ -340,13 +345,15 @@ def parse_serial_log(path: str) -> dict:
 
 
 # ----- per-machine runner -----------------------------------------------
-def run_machine(key: str, driver_src: str) -> dict:
+def run_machine(key: str, driver_src: str,
+                with_stress: bool = False,
+                with_p9: bool = False) -> dict:
     m = MACHINES[key]
     log(f"==== {m['name']} ====")
     copy_source(m)
     update_kickstart(m, driver_src)
 
-    cmd = build_qemu_cmd(m)
+    cmd = build_qemu_cmd(m, with_p9=with_p9)
     stderr = open(os.path.join(m["workdir"], "qemu_stderr.txt"), "w")
     log(f"[{m['name']}] launching QEMU ...")
     proc = subprocess.Popen(cmd, stderr=stderr, stdout=subprocess.DEVNULL,
@@ -362,9 +369,36 @@ def run_machine(key: str, driver_src: str) -> dict:
         parsed = parse_checks(checks.get("stdout", ""))
         sl = parse_serial_log(os.path.join(m["workdir"], "serial_full.log"))
         ok = all(parsed.values()) and sl.get("driver_loaded", False)
+
+        stress_result = None
+        if with_stress:
+            stress_log = os.path.join(m["workdir"], "stress_suite.log")
+            log(f"[{m['name']}] running full stress suite (tiers 1–5.5) → {stress_log}")
+            monitor_sock = os.path.join(m["workdir"], "monitor.sock")
+            stress_cmd = [sys.executable,
+                          os.path.join(os.path.dirname(__file__), "stress_suite.py"),
+                          str(m["ssh_forward_port"]),
+                          monitor_sock]
+            with open(stress_log, "w") as sf:
+                sp = subprocess.run(stress_cmd, stdout=sf, stderr=subprocess.STDOUT,
+                                     timeout=1800)
+            # Parse summary: last "N/M checks passed" line.
+            try:
+                with open(stress_log, "r") as sf:
+                    tail = sf.read()
+                for line in reversed(tail.splitlines()):
+                    if "checks passed" in line:
+                        stress_result = line.strip()
+                        break
+            except OSError:
+                pass
+            log(f"[{m['name']}] stress suite: {stress_result or 'no summary'} (rc={sp.returncode})")
+            ok = ok and (sp.returncode == 0)
+
         return {"machine": m["name"],
                 "result": "PASS" if ok else "FAIL",
                 "checks": parsed, "serial_log": sl,
+                "stress_result": stress_result,
                 "raw_stdout": checks.get("stdout", "")[-2000:],
                 "raw_stderr": checks.get("stderr", "")[:500]}
     finally:
@@ -402,6 +436,12 @@ def main():
                     help="comma-separated subset of a1,peg2,s460")
     ap.add_argument("--driver", default=DRIVER_DEBUG,
                     help="path to virtioscsi.device to inject")
+    ap.add_argument("--with-stress", action="store_true",
+                    help="run the full stress_suite.py (tiers 1–5.5) on "
+                         "each machine after basic checks")
+    ap.add_argument("--with-9p", action="store_true",
+                    help="attach /tmp/p9share via -virtfs so Tier 5.5 can "
+                         "exercise the virtio-9p shared-folder mount")
     args = ap.parse_args()
 
     # Make sure the 9P share exists before any guest tries to mount it.
@@ -414,7 +454,9 @@ def main():
             log(f"skipping unknown machine: {k}")
             continue
         try:
-            results[k] = run_machine(k, args.driver)
+            results[k] = run_machine(k, args.driver,
+                                     with_stress=args.with_stress,
+                                     with_p9=args.with_9p)
         except Exception as e:
             results[k] = {"machine": k, "result": "EXCEPTION", "error": str(e)}
         log(f"[{MACHINES[k]['name']}] => {results[k].get('result')}")
@@ -426,6 +468,8 @@ def main():
             log(f"    check: {k2:28s}  {'OK' if v else 'MISS'}")
         for k2, v in (r.get("serial_log") or {}).items():
             log(f"    serial: {k2:28s}  {'OK' if v else 'MISS'}")
+        if r.get("stress_result"):
+            log(f"    stress: {r['stress_result']}")
 
 
 if __name__ == "__main__":
