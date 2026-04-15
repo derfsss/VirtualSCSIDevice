@@ -75,7 +75,6 @@ dist: all
 	@echo "=== Creating distribution ==="
 	rm -rf $(DIST_DIR)/$(DIST_NAME)
 	mkdir -p $(DIST_DIR)/$(DIST_NAME)
-	mkdir -p $(DIST_DIR)/$(DIST_NAME)/Tests
 	@# Device driver (stripped release + unstripped debug variant)
 	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/
 	-cp $(BUILD_DIR)/virtioscsi.device.debug $(DIST_DIR)/$(DIST_NAME)/ 2>/dev/null || true
@@ -83,10 +82,6 @@ dist: all
 	cp Autoinstall                    $(DIST_DIR)/$(DIST_NAME)/
 	@# Documentation
 	cp README_os4depot.txt            $(DIST_DIR)/$(DIST_NAME)/
-	@# Test programs
-	-cp $(BUILD_DIR)/test_virtioscsi  $(DIST_DIR)/$(DIST_NAME)/Tests/ 2>/dev/null || true
-	-cp $(BUILD_DIR)/test_modern      $(DIST_DIR)/$(DIST_NAME)/Tests/ 2>/dev/null || true
-	-cp $(BUILD_DIR)/test_inquiry     $(DIST_DIR)/$(DIST_NAME)/Tests/ 2>/dev/null || true
 	@echo "Distribution created in $(DIST_DIR)/$(DIST_NAME)/"
 	@echo "Contents:"
 	@find $(DIST_DIR)/$(DIST_NAME) -type f | sort
