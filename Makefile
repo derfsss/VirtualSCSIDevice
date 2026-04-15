@@ -50,7 +50,8 @@ $(TARGET): $(OBJ)
 	@if echo "$(CFLAGS)" | grep -q -- '-DDEBUG'; then \
 		echo "Debug build — keeping symbols and debug info"; \
 	else \
-		echo "Stripping release build..."; \
+		echo "Preserving unstripped copy as $(TARGET).debug and stripping release..."; \
+		cp $(TARGET) $(TARGET).debug; \
 		$(STRIP) --strip-all $(TARGET); \
 	fi
 
@@ -75,8 +76,9 @@ dist: all
 	rm -rf $(DIST_DIR)/$(DIST_NAME)
 	mkdir -p $(DIST_DIR)/$(DIST_NAME)
 	mkdir -p $(DIST_DIR)/$(DIST_NAME)/Tests
-	@# Device driver
+	@# Device driver (stripped release + unstripped debug variant)
 	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/
+	-cp $(BUILD_DIR)/virtioscsi.device.debug $(DIST_DIR)/$(DIST_NAME)/ 2>/dev/null || true
 	@# Install script
 	cp Autoinstall                    $(DIST_DIR)/$(DIST_NAME)/
 	@# Documentation

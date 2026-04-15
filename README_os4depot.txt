@@ -1,20 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 1.9 - 14 April 2026
-Author: derfsss
-Source: https://github.com/derfsss/VirtualSCSIDevice
-
-
-DEVELOPED WITH AI
------------------
-This driver was developed with Claude AI (Anthropic) acting as the primary
-engineer - writing all C code, designing the architecture, debugging
-hardware-level issues, and navigating the AmigaOS 4.1 SDK. It is a
-practical demonstration of AI-assisted low-level systems programming on a
-niche, legacy platform with minimal AI training data available.
-
-Kyvos (https://ko-fi.com/s/6476fdadd2) was used to develop and test this
-device driver.
+Version 1.9 - 15 April 2026
 
 
 INTRODUCTION
@@ -162,15 +148,18 @@ Build command (from the project root directory in a WSL2 terminal):
   docker run --rm -v $(pwd):/src -w /src \
     walkero/amigagccondocker:os4-gcc11 make
 
-Output: build/virtioscsi.device
+Output: build/virtioscsi.device  (stripped release build)
+        build/virtioscsi.device.debug  (unstripped, same sources)
 
-Source code: https://github.com/derfsss/VirtualSCSIDevice
+The release LHA includes both binaries -- the stripped one goes in
+Kickstart/, and the .debug variant stays alongside it for diagnostic
+sessions where symbol addresses help decode DSI/grim-reaper reports.
 
 
 CHANGELOG
 ---------
 
-v1.9 (14.04.2026)
+v1.9 (15.04.2026)
   - Modern VirtIO MMIO on AmigaOne: runtime workaround in pci_discovery.c
     for a 64-bit BAR firmware bug. Before v1.9, BAR4's high DWORD was
     left at 0xFFFFFFFF on AmigaOne (BBoot doesn't program it and
@@ -201,6 +190,13 @@ v1.9 (14.04.2026)
     IExec->DebugPrintF and returns RETURN_FAIL (20) instead of 0.
   - Version renumbered: v53.8 -> v1.9. Boot drive support is unchanged
     (resident priority 0 + diskboot.config entry "virtioscsi.device 8 3").
+  - Validated against a 12-check stress suite on all three QEMU PowerPC
+    machines (AmigaOne, Pegasos2, SAM460ex): data-integrity round-trips
+    at tiny / 90 KB / 554 KB / 1.26 MB, dir copy, 100-iteration
+    upload/download loop, three parallel on-volume copies, double
+    Open/Close UAF guard, and a 2-minute baseline-normalised soak. SCSI
+    memory drift stays below the IDE baseline on every machine -- no
+    per-I/O leak signal.
 
 v53.8 (14.04.2026)
   - Boot drive support: VirtIO SCSI disks can be used as boot drives
@@ -297,4 +293,3 @@ v1.0 (20.02.2026)
 LICENSE
 -------
 See LICENSE file in the source repository.
-https://github.com/derfsss/VirtualSCSIDevice
