@@ -157,3 +157,164 @@ int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevU
     unit->geometry_valid = TRUE;
     return 0;
 }
+
+/*
+ * Read block 0 of the unit, look for the "RDSK" signature, and extract
+ * the physical CHS values the disk itself declares.  These are what
+ * HDToolbox (or whatever tool initialised the RDB) wrote in; reporting
+ * them back via TD_GETGEOMETRY keeps our geometry consistent with every
+ * partition block downstream, rather than fighting it with made-up
+ * constants.
+ *
+ * Block 0 layout (struct RigidDiskBlock):
+ *   0x00 "RDSK"            4 bytes
+ *   0x04 SummedLongs       uint32
+ *   0x08 ChkSum            int32  (checksum: sum of SummedLongs longs == 0)
+ *   0x0C HostID            uint32
+ *   0x10 BlockBytes        uint32
+ *   ...
+ *   0x40 Cylinders         uint32
+ *   0x44 Sectors           uint32  (= BlocksPerTrack)
+ *   0x48 Heads             uint32  (= Surfaces)
+ *
+ * A missing RDSK signature or a checksum mismatch is NOT an error — it
+ * just means "no RDB on this disk, use the fallback linear geometry".
+ */
+int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevUnit *unit)
+{
+    struct ExecIFace *IExec = base->IExec;
+
+    if (!unit || unit->rdb_geometry_checked)
+        return 0;
+
+    /* We need block_size before we can request "one block".  If the caller
+     * hasn't called ensure_geometry_cached yet, do it now. */
+    if (!unit->geometry_valid) {
+        int32 rc = ensure_geometry_cached(base, unit);
+        if (rc != 0)
+            return rc;
+    }
+
+    uint32 bs = unit->block_size ? unit->block_size : 512;
+
+    /* DMA-friendly buffer for the block-0 read. */
+    uint8 *buf = IExec->AllocVecTags(bs, AVT_Type, MEMF_SHARED,
+                                     AVT_ClearWithValue, 0, TAG_END);
+    if (!buf) {
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: AllocVec failed\n");
+        unit->rdb_geometry_checked = TRUE;
+        return 0; /* non-fatal */
+    }
+
+    uint8 cdb[10];
+    make_read10_cdb(cdb, 0, 1); /* LBA 0, 1 block */
+
+    uint8 scsi_status = 0;
+    uint32 residual = 0;
+    int32 rc = VirtIOSCSI_DoIO(base, unit, unit->target_id, unit->lun_id,
+                               cdb, 10, buf, bs, FALSE,
+                               &scsi_status, &residual);
+    unit->rdb_geometry_checked = TRUE;
+
+    if (rc != 0 || scsi_status != 0) {
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: block-0 read failed rc=%ld status=0x%02x\n",
+                (long)rc, (uint32)scsi_status);
+        IExec->FreeVec(buf);
+        return 0; /* non-fatal */
+    }
+
+    /* RDSK signature check */
+    if (buf[0] != 'R' || buf[1] != 'D' || buf[2] != 'S' || buf[3] != 'K') {
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: no RDSK signature at block 0 "
+                "(got 0x%02x%02x%02x%02x) — using fallback geometry\n",
+                buf[0], buf[1], buf[2], buf[3]);
+        IExec->FreeVec(buf);
+        return 0; /* non-fatal */
+    }
+
+    /* Extract the physical CHS (big-endian uint32s at offsets 0x40/0x44/0x48). */
+    uint32 cyls    = ((uint32)buf[0x40] << 24) | ((uint32)buf[0x41] << 16) |
+                     ((uint32)buf[0x42] << 8)  |  (uint32)buf[0x43];
+    uint32 sectors = ((uint32)buf[0x44] << 24) | ((uint32)buf[0x45] << 16) |
+                     ((uint32)buf[0x46] << 8)  |  (uint32)buf[0x47];
+    uint32 heads   = ((uint32)buf[0x48] << 24) | ((uint32)buf[0x49] << 16) |
+                     ((uint32)buf[0x4A] << 8)  |  (uint32)buf[0x4B];
+
+    /* Sanity: values must be non-zero and factor into something <= total_blocks. */
+    if (cyls == 0 || sectors == 0 || heads == 0 ||
+        ((uint64)cyls * sectors * heads) > unit->total_blocks) {
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: implausible CHS %lu/%lu/%lu (total %llu) — ignoring\n",
+                cyls, heads, sectors, (unsigned long long)unit->total_blocks);
+        IExec->FreeVec(buf);
+        return 0;
+    }
+
+    unit->rdb_phys_cyls      = cyls;
+    unit->rdb_phys_sectors   = sectors;
+    unit->rdb_phys_heads     = heads;
+    unit->rdb_geometry_valid = TRUE;
+
+    DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB header CHS: C=%lu H=%lu S=%lu (= %lu blocks)\n",
+            cyls, heads, sectors, cyls * heads * sectors);
+
+    /*
+     * Now also follow the PartitionList and read the FIRST partition's
+     * `de_Surfaces` and `de_BlocksPerTrack`.  These are the values that
+     * filesystem handlers (SFS) expect TD_GETGEOMETRY's dg_Heads/
+     * dg_TrackSectors to match — because partition LBAs are computed as
+     * `cyl * de_Surfaces * de_BlocksPerTrack`, and if our reported shape
+     * differs from what's in the PartitionBlock, SFS gets a different
+     * effective LBA when it cross-references the two.  IDE drivers like
+     * a1ide.device avoid this trap because the disk's actual physical
+     * CHS *is* what HDToolbox used to define the partition — so the
+     * RDB header CHS, the PartitionBlock CHS, and TD_GETGEOMETRY all
+     * agree.  On a virtual disk like ours, MediaToolbox can pick a
+     * different shape from what we synthesised at partition-creation
+     * time, leaving us with a mismatch unless we explicitly track the
+     * partition's choice.
+     *
+     * Layout: rdb_PartitionList at byte 0x1C of the RDB header gives the
+     * block number of the first PartitionBlock.  In the PartitionBlock,
+     * the DOSEnvVec starts at byte 128; de_Surfaces is at +12 and
+     * de_BlocksPerTrack is at +20 within that env.
+     */
+    uint32 part_block = ((uint32)buf[0x1C] << 24) | ((uint32)buf[0x1D] << 16) |
+                        ((uint32)buf[0x1E] << 8)  |  (uint32)buf[0x1F];
+    if (part_block != 0xFFFFFFFFU && part_block > 0 && part_block < cyls) {
+        uint8 *pbuf = IExec->AllocVecTags(bs, AVT_Type, MEMF_SHARED,
+                                          AVT_ClearWithValue, 0, TAG_END);
+        if (pbuf) {
+            uint8 cdb2[10];
+            make_read10_cdb(cdb2, part_block, 1);
+            uint8 ss = 0;
+            uint32 res = 0;
+            int32 prc = VirtIOSCSI_DoIO(base, unit, unit->target_id, unit->lun_id,
+                                        cdb2, 10, pbuf, bs, FALSE, &ss, &res);
+            if (prc == 0 && ss == 0 &&
+                pbuf[0] == 'P' && pbuf[1] == 'A' && pbuf[2] == 'R' && pbuf[3] == 'T') {
+                /* DOSEnvVec is at offset 128, de_Surfaces at +12, de_BlocksPerTrack at +20 */
+                uint32 surfaces = ((uint32)pbuf[128 + 12] << 24) |
+                                  ((uint32)pbuf[128 + 13] << 16) |
+                                  ((uint32)pbuf[128 + 14] << 8)  |
+                                   (uint32)pbuf[128 + 15];
+                uint32 blkpt    = ((uint32)pbuf[128 + 20] << 24) |
+                                  ((uint32)pbuf[128 + 21] << 16) |
+                                  ((uint32)pbuf[128 + 22] << 8)  |
+                                   (uint32)pbuf[128 + 23];
+                if (surfaces > 0 && blkpt > 0 &&
+                    surfaces * blkpt == sectors * heads /* same total/cyl */ ) {
+                    DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] PartitionBlock CHS shape: "
+                            "Surfaces=%lu BlocksPerTrack=%lu (overrides RDB header's H=%lu S=%lu — "
+                            "same product, different shape)\n",
+                            surfaces, blkpt, heads, sectors);
+                    unit->rdb_phys_heads   = surfaces;
+                    unit->rdb_phys_sectors = blkpt;
+                }
+            }
+            IExec->FreeVec(pbuf);
+        }
+    }
+
+    IExec->FreeVec(buf);
+    return 0;
+}

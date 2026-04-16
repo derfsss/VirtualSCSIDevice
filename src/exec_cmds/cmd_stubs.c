@@ -39,7 +39,9 @@ void Handle_TD_GetDriveType(struct VirtIOSCSIBase *libBase, struct IOStdReq *req
     struct VirtIOUSCSIDevUnit *unit = (struct VirtIOUSCSIDevUnit *)req->io_Unit;
     DPRINTF(libBase->IExec, "[virtioscsi] TD_GETDRIVETYPE called for T%lu L%lu\n", unit->target_id, unit->lun_id);
     req->io_Error  = 0;
-    req->io_Actual = DRIVE_NEWSTYLE; /* 0x44 */
+    /* DEBUG: matched to a1ide.device which returns DRIVE3_5 not NSTY —
+     * see comment in BeginIO.c TD_GETDRIVETYPE handler. */
+    req->io_Actual = DRIVE3_5;
 }
 
 /* Generic success handler for commands we don't emulate but must return cleanly */

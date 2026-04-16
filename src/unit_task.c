@@ -359,7 +359,14 @@ void UnitTask_Entry(void)
 
     /* ---- Main pipeline event loop ---- */
     while (!unit->task_shutdown) {
+        DPRINTF(IExec, "[virtioscsi:unit_task.c] unit %lu: Wait(mask=0x%08lx) open_count=%lu\n",
+                unit->unit_num, wait_mask, unit->open_count);
         uint32 sigs = IExec->Wait(wait_mask);
+        DPRINTF(IExec, "[virtioscsi:unit_task.c] unit %lu: woke sigs=0x%08lx (io=%s irq=%s brk=%s)\n",
+                unit->unit_num, sigs,
+                (sigs & unit->io_port_mask)    ? "Y" : "-",
+                (sigs & unit->io_signal_mask)  ? "Y" : "-",
+                (sigs & SIGBREAKF_CTRL_C)      ? "Y" : "-");
 
         if (sigs & SIGBREAKF_CTRL_C)
             break;
@@ -733,8 +740,45 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
     }
 
     /* For synchronous commands (not submitted asynchronously), reply now */
-    if (!submitted)
+    if (!submitted) {
+        struct MsgPort *rp = ioreq->io_Message.mn_ReplyPort;
+        DPRINTF(IExec,
+                "[virtioscsi:unit_task.c] ReplyMsg: ioreq=%p cmd=%lu err=%ld actual=%lu port=%p\n"
+                "  port pre-reply: mp_Flags=0x%02x mp_SigBit=%d mp_SigTask=%p lh_Head=%p lh_TailPred=%p\n",
+                ioreq, (uint32)ioreq->io_Command, (long)(int8)ioreq->io_Error,
+                (uint32)ioreq->io_Actual, rp,
+                rp ? (uint32)rp->mp_Flags : 0,
+                rp ? (int)rp->mp_SigBit : -1,
+                rp ? (void *)rp->mp_SigTask : NULL,
+                rp ? (void *)rp->mp_MsgList.lh_Head : NULL,
+                rp ? (void *)rp->mp_MsgList.lh_TailPred : NULL);
         IExec->ReplyMsg((struct Message *)ioreq);
+        /* Re-read after: if the reply landed, lh_Head should point to our
+         * ioreq (as the first queued reply), OR if the receiver was very
+         * fast, the port is empty and lh_Head == &lh_Tail (self-ref sentinel). */
+        DPRINTF(IExec,
+                "  port post-reply: lh_Head=%p lh_TailPred=%p  (ioreq in list? Succ=%p Pred=%p)\n",
+                rp ? (void *)rp->mp_MsgList.lh_Head : NULL,
+                rp ? (void *)rp->mp_MsgList.lh_TailPred : NULL,
+                ioreq->io_Message.mn_Node.ln_Succ,
+                ioreq->io_Message.mn_Node.ln_Pred);
+        /* If the target task is identifiable, dump its run state.
+         * tc_State: 0=INVALID, 1=ADDED, 2=RUN, 3=READY, 4=WAIT, 5=EXCEPT,
+         * 6=REMOVED.  Bit we signaled is stored in tc_SigAlloc masks.
+         * This tells us whether the receiving task is actually blocked on
+         * our signal or stuck elsewhere. */
+        struct Task *tgt = rp ? rp->mp_SigTask : NULL;
+        if (tgt) {
+            DPRINTF(IExec,
+                    "  target task %p '%s': tc_State=%d tc_SigRecvd=0x%08lx tc_SigWait=0x%08lx tc_SigAlloc=0x%08lx\n",
+                    tgt,
+                    tgt->tc_Node.ln_Name ? tgt->tc_Node.ln_Name : "?",
+                    (int)tgt->tc_State,
+                    (uint32)tgt->tc_SigRecvd,
+                    (uint32)tgt->tc_SigWait,
+                    (uint32)tgt->tc_SigAlloc);
+        }
+    }
 
     return submitted; /* TRUE = AddBuf done, caller must VirtIOSCSI_Kick() */
 }

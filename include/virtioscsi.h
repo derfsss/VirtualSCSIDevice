@@ -121,6 +121,23 @@ struct VirtIOUSCSIDevUnit
     uint64 total_blocks; /* 64-bit: supports >2TB disks (READ CAPACITY 16) */
     uint32 block_size;
     BOOL geometry_valid;
+
+    /*
+     * Physical CHS values as declared in the disk's RDB (RigidDiskBlock).
+     * Populated on first TD_GETGEOMETRY by reading block 0 and checking for
+     * the "RDSK" signature.  If present, we return these values so the
+     * geometry we report matches what HDToolbox (or whoever initialised
+     * the disk) wrote into the RDB — which is what every downstream
+     * partition block is shaped around.  If there's no RDB (fresh disk),
+     * `rdb_geometry_valid` stays FALSE and TD_GETGEOMETRY falls back to a
+     * synthesized 1 head × 1 sector-per-track "linear" geometry that makes
+     * no assumptions about shape.
+     */
+    uint32 rdb_phys_cyls;      /* rdb_Cylinders    @ RDB offset 0x40 */
+    uint32 rdb_phys_sectors;   /* rdb_Sectors      @ RDB offset 0x44 (BlocksPerTrack) */
+    uint32 rdb_phys_heads;     /* rdb_Heads        @ RDB offset 0x48 (Surfaces) */
+    BOOL   rdb_geometry_valid; /* TRUE if block 0 had a valid RDSK signature */
+    BOOL   rdb_geometry_checked; /* TRUE once the probe has run (success or fail) */
     /* Held change notification requests (must NOT be replied to until removed) */
     struct IOStdReq *changeint_req; /* Held TD_ADDCHANGEINT IORequest */
     struct IOStdReq *remove_req;    /* Held TD_REMOVE IORequest */

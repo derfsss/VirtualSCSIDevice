@@ -1,18 +1,25 @@
 #ifndef VERSION_H
 #define VERSION_H
 
-/* Individual version components */
+/* Individual version components — displayed to the user and in $VER */
 #define DEVICE_VERSION 1
-#define DEVICE_REVISION 9
+#define DEVICE_REVISION 10
 #define DEVNAME "virtioscsi.device"
 
 /* Helper macros for stringification */
 #define STR(x) #x
 #define XSTR(x) STR(x)
 
-/* Map to standard AmigaOS legacy defines */
-#define DEVVER DEVICE_VERSION
-#define DEVREV DEVICE_REVISION
+/*
+ * lib_Version stored in the Resident / Library struct — read by AmigaOS
+ * OpenDevice() and by filesystem handlers (SFS 1.290 rejects anything
+ * below ~50 as "too old", which is what was silently blocking our mount
+ * after the 53.8 → 1.9 renumber).  Keep this pinned to an OS4-era
+ * version number so system software accepts us.  DEVVERSIONSTRING below
+ * still uses the 1.9 display version the user sees.
+ */
+#define DEVVER  53
+#define DEVREV  DEVICE_REVISION
 
 /*
  * Build date and time: passed from the Makefile via -DBUILD_DATE and
@@ -27,10 +34,17 @@
 #endif
 
 /*
- * Standard AmigaOS version string: $VER: name version.revision (date)
- * Combined using string literal concatenation.
+ * Standard AmigaOS version string: $VER: name version.revision (date).
+ * MUST use DEVVER/DEVREV (the values stored in lib_Version/lib_Revision)
+ * so the numeric version in the string matches what OpenDevice() and
+ * any OS4 version-parser reads from the library struct.  Otherwise SFS
+ * 1.290 (and other OS4 filesystem handlers) see a mismatch between the
+ * numeric lib_Version and the version embedded in the IdString, flag
+ * the device as "corrupt / inconsistent", and silently refuse to mount.
+ * Display name for users (e.g. GitHub release tag) is v1.9 — that's a
+ * README-level concern, not something the library struct reports.
  */
-#define DEVVERSIONSTRING DEVNAME " " XSTR(DEVICE_VERSION) "." XSTR(DEVICE_REVISION) " (" BUILD_DATE ")"
+#define DEVVERSIONSTRING DEVNAME " " XSTR(DEVVER) "." XSTR(DEVREV) " (" BUILD_DATE ")"
 
 /*
  * Extended version string for serial debug output at boot.

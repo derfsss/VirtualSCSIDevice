@@ -1,5 +1,8 @@
 #include "unit_discovery.h"
 #include "virtio/virtio_scsi_io.h"
+#include <exec/ports.h>
+#include <exec/lists.h>
+#include <exec/nodes.h>
 
 /*
  * Scan SCSI targets 0-7, LUNs 0-7 via INQUIRY.
@@ -73,9 +76,36 @@ uint32 DiscoverUnits(struct VirtIOSCSIBase *devBase)
                     unit->target_id = t;
                     unit->lun_id = l;
                     unit->media_present = TRUE; /* assumed present at discovery */
+
+                    /*
+                     * Initialize the embedded struct Unit to a sane, valid
+                     * state.  Filesystem handlers (SFS 1.290 in particular)
+                     * read ioreq->io_Unit and inspect the embedded
+                     * MsgPort's ln_Type — if it's zero (NT_UNKNOWN) the
+                     * handler treats the unit as corrupt and silently
+                     * aborts the mount.  We don't use unit_MsgPort as the
+                     * actual dispatch queue (our unit task has its own
+                     * io_port), so mark it PA_IGNORE.  The mp_MsgList is
+                     * initialized to an empty list so anyone walking it
+                     * gets a clean "no messages" reading.
+                     */
+                    unit->dev_Unit.unit_MsgPort.mp_Node.ln_Type = NT_MSGPORT;
+                    unit->dev_Unit.unit_MsgPort.mp_Node.ln_Name = (STRPTR)"virtioscsi unit";
+                    unit->dev_Unit.unit_MsgPort.mp_Flags        = PA_IGNORE;
+                    unit->dev_Unit.unit_MsgPort.mp_SigBit       = 0;
+                    unit->dev_Unit.unit_MsgPort.mp_SigTask      = NULL;
+                    iexec->NewMinList((struct MinList *)&unit->dev_Unit.unit_MsgPort.mp_MsgList);
+                    /* UNITF_ACTIVE = 0x01: unit is ready to accept I/O.
+                     * SFS checks this on mount; a zero unit_flags looks
+                     * like "unit dormant" and might be the silent bail. */
+                    unit->dev_Unit.unit_flags   = UNITF_ACTIVE;
+                    unit->dev_Unit.unit_OpenCnt = 0;
+
                     devBase->units[units_found] = unit;
-                    DPRINTF(iexec, "[virtioscsi:unit_discovery.c] Registered unit %lu (T%lu L%lu)\n",
-                            units_found, t, l);
+                    DPRINTF(iexec, "[virtioscsi:unit_discovery.c] Registered unit %lu (T%lu L%lu) "
+                                   "dev_Unit=%p unit_MsgPort=%p\n",
+                            units_found, t, l,
+                            &unit->dev_Unit, &unit->dev_Unit.unit_MsgPort);
                     units_found++;
                 }
             }

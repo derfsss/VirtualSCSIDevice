@@ -1,6 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 1.9 - 15 April 2026
+Version 1.10 - 17 April 2026
 
 
 INTRODUCTION
@@ -158,6 +158,29 @@ sessions where symbol addresses help decode DSI/grim-reaper reports.
 
 CHANGELOG
 ---------
+
+v1.10 (17.04.2026)
+  - SFS 1.290 compatibility: explicit 68k-compatible jump table
+    (CLT_Vector68K) ensures BeginIO at offset -30 and AbortIO at -36
+    are reachable from legacy handlers. Resident struct placed in
+    writable .data (matches all shipping OS4 IDE drivers). DriveGeometry
+    struct zeroed before filling (SFS checks dg_Reserved).
+    dg_BufMemType set to MEMF_PUBLIC|MEMF_LOCAL to keep DOSEnvVec in
+    BPTR-safe low RAM. TD_GETDRIVETYPE returns DRIVE3_5 (matching
+    a1ide.device). dev_Unit properly initialised with NT_MSGPORT +
+    UNITF_ACTIVE.
+  - RDB geometry caching: TD_GETGEOMETRY reads the RDB header and first
+    PartitionBlock to report CHS that matches the on-disk layout.
+  - lib_Version pinned to 53: SFS 1.290 rejects devices with
+    lib_Version below ~50. Display version is 1.10 but the Resident
+    struct reports 53.10.
+  - Makefile dual-build: separate release (stripped) and debug (with
+    DPRINTF + symbols) targets built in parallel.
+  - Stress suite updated: accepts --port, --monitor, --volume CLI args.
+    Hot-plug tests skip gracefully when QEMU occupies all targets.
+    Shell-run test checks serial log for diagnostic. 9P tier detects
+    already-mounted SHARED:.
+  - Validated 14/14 on AmigaOne, Pegasos2, and SAM460ex.
 
 v1.9 (15.04.2026)
   - Modern VirtIO MMIO on AmigaOne: runtime workaround in pci_discovery.c

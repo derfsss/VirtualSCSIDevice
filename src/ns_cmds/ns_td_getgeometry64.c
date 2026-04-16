@@ -10,6 +10,13 @@ void Handle_NS_TD_GetGeometry64(struct VirtIOSCSIBase *libBase, struct IOStdReq 
 {
     struct DriveGeometry64 *geom = (struct DriveGeometry64 *)req->io_Data;
 
+    /* Zero the whole struct so no reserved byte leaks caller-side garbage.
+     * Same reasoning as the 32-bit TD_GETGEOMETRY path. */
+    if (geom && req->io_Length >= sizeof(struct DriveGeometry64)) {
+        uint8 *p = (uint8 *)geom;
+        for (uint32 i = 0; i < sizeof(struct DriveGeometry64); i++) p[i] = 0;
+    }
+
     if (req->io_Length < sizeof(struct DriveGeometry64)) {
         DPRINTF(libBase->IExec, "[virtioscsi:ns_td_getgeometry64.c] BADLENGTH len=%lu\n",
                 (uint32)req->io_Length);

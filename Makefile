@@ -14,9 +14,11 @@ DOCKER_IMAGE = walkero/amigagccondocker:os4-gcc11
 DOCKER_RUN   = docker run --rm -v "$(shell pwd):/work" -w /work $(DOCKER_IMAGE)
 
 BUILD_DIR = build
+DEBUG_OBJ_DIR = $(BUILD_DIR)/obj-debug
 DIST_DIR = dist
 DIST_NAME = VirtualSCSIDevice
 TARGET = $(BUILD_DIR)/virtioscsi.device
+TARGET_DEBUG = $(BUILD_DIR)/virtioscsi.device.debug
 SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c \
       src/scsi_cdb_helpers.c src/cmd_names.c src/unit_discovery.c src/unit_task.c \
       src/exec_cmds/cmd_read.c src/exec_cmds/cmd_write.c \
@@ -36,24 +38,29 @@ SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c
       src/virtio/virtio_events.c src/virtio/virtio_mounter.c
 
 OBJ = $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(SRC))
-DEP = $(OBJ:.o=.d)
+OBJ_DEBUG = $(patsubst src/%.c, $(DEBUG_OBJ_DIR)/%.o, $(SRC))
+DEP = $(OBJ:.o=.d) $(OBJ_DEBUG:.o=.d)
 
 .PHONY: all dist dist-lha clean help
 
-all: $(BUILD_DIR) $(TARGET) $(BUILD_DIR)/test_virtioscsi $(BUILD_DIR)/test_modern $(BUILD_DIR)/test_inquiry
+all: $(BUILD_DIR) $(TARGET) $(TARGET_DEBUG) $(BUILD_DIR)/test_virtioscsi $(BUILD_DIR)/test_modern $(BUILD_DIR)/test_inquiry
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+# Release: compile without -DDEBUG, strip symbols.  This is what goes into
+# SYS:Kickstart/ on end-user installs.
 $(TARGET): $(OBJ)
 	$(CC) $(OBJ) -o $(TARGET) $(LDFLAGS)
-	@if echo "$(CFLAGS)" | grep -q -- '-DDEBUG'; then \
-		echo "Debug build — keeping symbols and debug info"; \
-	else \
-		echo "Preserving unstripped copy as $(TARGET).debug and stripping release..."; \
-		cp $(TARGET) $(TARGET).debug; \
-		$(STRIP) --strip-all $(TARGET); \
-	fi
+	@echo "Stripping release build..."
+	$(STRIP) --strip-all $(TARGET)
+
+# Debug: recompile every source with -DDEBUG so DPRINTF() emits via
+# DebugPrintF and do NOT strip, so stack traces decode.  Ships alongside
+# the release binary in the LHA for diagnostic sessions.
+$(TARGET_DEBUG): $(OBJ_DEBUG)
+	$(CC) $(OBJ_DEBUG) -o $(TARGET_DEBUG) $(LDFLAGS)
+	@echo "Debug build produced (DPRINTF active, symbols kept)"
 
 $(BUILD_DIR)/test_virtioscsi: tests/test_virtioscsi.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@ -lauto
@@ -67,6 +74,10 @@ $(BUILD_DIR)/test_inquiry: tests/test_inquiry.c | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(DEBUG_OBJ_DIR)/%.o: src/%.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DDEBUG $(DEPFLAGS) -c $< -o $@
 
 -include $(DEP)
 

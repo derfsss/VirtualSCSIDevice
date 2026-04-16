@@ -287,9 +287,10 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
      * modern MMIO path both sides agree on LE, and virtqueue.c wraps all
      * indirect-table writes with vr64/vr32/vr16, so it's safe to enable.
      */
-    uint32 drv_feat_lo = dev_feat_lo & ((1UL << 1)   /* HOTPLUG */
-                                       | (1UL << 2)   /* CHANGE */
-                                       | (1UL << 28)  /* INDIRECT_DESC */
+    /* DEBUG: HOTPLUG (bit 1) + CHANGE (bit 2) deliberately NOT negotiated
+     * to isolate the SFS 1.290 mount-hang.  If SFS still crashes with these
+     * off, the bug is unrelated to the v1.9 event-queue feature set. */
+    uint32 drv_feat_lo = dev_feat_lo & ((1UL << 28)  /* INDIRECT_DESC */
                                        | (1UL << 29)  /* EVENT_IDX */);
     uint32 drv_feat_hi = dev_feat_hi & 1UL;          /* VIRTIO_F_VERSION_1 */
 
