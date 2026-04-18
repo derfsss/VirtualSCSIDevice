@@ -164,6 +164,16 @@ struct VirtIOUSCSIDevUnit
     struct MsgPort *io_port;        /* Incoming IORequest queue */
     uint32          io_port_mask;   /* Precomputed 1 << io_port->mp_SigBit */
     BOOL            task_shutdown;  /* Set TRUE to request task exit */
+    char            task_name[32];  /* Persistent name for CreateTaskTags (ln_Name stores pointer) */
+
+    /* Shutdown handshake: caller of UnitTask_Shutdown sets these, then Waits.
+     * The unit task signals shutdown_exit_task on exit. */
+    struct Task    *shutdown_exit_task;
+    uint32          shutdown_exit_mask;
+
+    /* Mutex protecting io_port message queue traversal (AbortIO vs GetMsg).
+     * Replaces deprecated Forbid/Permit.  Allocated by unit task, freed on exit. */
+    APTR            port_mutex;
 
     /*
      * Persistent ISR signal: the unit task allocates one signal bit at startup

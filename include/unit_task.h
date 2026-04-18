@@ -34,9 +34,4 @@ BOOL UnitTask_Start(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *u
  */
 void UnitTask_Shutdown(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *unit);
 
-/*
- * Entry point for the unit device task (called by exec, not directly).
- */
-void UnitTask_Entry(void);
-
 #endif /* UNIT_TASK_H */

@@ -7,7 +7,7 @@
  */
 const uint16 supported_commands[] = {
     /* Standard Exec commands */
-    CMD_READ, CMD_WRITE, CMD_UPDATE, CMD_CLEAR, CMD_FLUSH,
+    CMD_READ, CMD_WRITE, CMD_UPDATE, CMD_CLEAR, CMD_FLUSH, CMD_START, CMD_STOP,
 
     /* Trackdisk commands */
     TD_MOTOR, TD_SEEK, TD_FORMAT, TD_REMOVE, TD_CHANGENUM, TD_CHANGESTATE, TD_PROTSTATUS, TD_GETDRIVETYPE,
@@ -66,6 +66,20 @@ const char *GetCommandName(uint32 cmd)
     case NSCMD_TD_SEEK64:         return "NSCMD_TD_SEEK64";
     case NSCMD_TD_FORMAT64:       return "NSCMD_TD_FORMAT64";
     case NSCMD_TD_GETGEOMETRY64:  return "NSCMD_TD_GETGEOMETRY64";
+    case NSCMD_TD_CHANGEUNIT:     return "NSCMD_TD_CHANGEUNIT";
+    case NSCMD_TD_ADDSTATCALLBACK: return "NSCMD_TD_ADDSTATCALLBACK";
+    case NSCMD_TD_REMSTATCALLBACK: return "NSCMD_TD_REMSTATCALLBACK";
+    case NSCMD_ETD_READ64:        return "NSCMD_ETD_READ64";
+    case NSCMD_ETD_WRITE64:       return "NSCMD_ETD_WRITE64";
+    case NSCMD_ETD_SEEK64:        return "NSCMD_ETD_SEEK64";
+    case NSCMD_ETD_FORMAT64:      return "NSCMD_ETD_FORMAT64";
+    case ETD_READ:                return "ETD_READ";
+    case ETD_WRITE:               return "ETD_WRITE";
+    case ETD_MOTOR:               return "ETD_MOTOR";
+    case ETD_SEEK:                return "ETD_SEEK";
+    case ETD_FORMAT:              return "ETD_FORMAT";
+    case ETD_UPDATE:              return "ETD_UPDATE";
+    case ETD_CLEAR:               return "ETD_CLEAR";
     default:                  return "UNKNOWN";
     }
 }

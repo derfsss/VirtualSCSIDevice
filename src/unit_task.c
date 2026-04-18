@@ -301,20 +301,14 @@ static void free_unit_dma(struct VirtIOSCSIBase *libBase,
  * UnitTask_Entry
  *
  * Entry point for each unit's device task. Exec calls this function in the
- * new task's context. We retrieve our parameters from tc_UserData, open our
- * message port, signal the parent, then run the event loop.
+ * new task's context. startMsg arrives via AT_Param1 from CreateTaskTags.
  * ---------------------------------------------------------------------- */
-void UnitTask_Entry(void)
+static void UnitTask_Entry(struct UnitTaskStartMsg *startMsg)
 {
-    struct ExecIFace *IExec;
-
-    /* tc_UserData carries the start message set by UnitTask_Start() */
-    struct Task *self = ((struct ExecIFace *)((*(struct ExecBase **)4)->MainInterface))->FindTask(NULL);
-    struct UnitTaskStartMsg *startMsg = (struct UnitTaskStartMsg *)self->tc_UserData;
-
     struct VirtIOSCSIBase    *libBase = startMsg->libBase;
     struct VirtIOUSCSIDevUnit *unit   = startMsg->unit;
-    IExec = libBase->IExec;
+    struct ExecIFace *IExec = libBase->IExec;
+    struct Task *self = IExec->FindTask(NULL);
 
     DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: unit %lu started\n", unit->unit_num);
 
@@ -322,7 +316,17 @@ void UnitTask_Entry(void)
     unit->io_port = IExec->AllocSysObjectTags(ASOT_PORT, TAG_DONE);
     if (!unit->io_port) {
         DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: AllocSysObject(PORT) failed\n");
-        /* Signal parent of failure */
+        IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
+        return;
+    }
+
+    /* Mutex protecting io_port queue traversal (AbortIO vs GetMsg).
+     * Replaces deprecated Forbid/Permit per AmigaOS 4.x guidelines. */
+    unit->port_mutex = IExec->AllocSysObjectTags(ASOT_MUTEX, TAG_DONE);
+    if (!unit->port_mutex) {
+        DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: AllocSysObject(MUTEX) failed\n");
+        IExec->FreeSysObject(ASOT_PORT, unit->io_port);
+        unit->io_port = NULL;
         IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
         return;
     }
@@ -391,7 +395,12 @@ void UnitTask_Entry(void)
         if (sigs & unit->io_port_mask) {
             struct IOStdReq *ioreq;
             BOOL need_kick = FALSE;
-            while ((ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port)) != NULL) {
+            for (;;) {
+                IExec->MutexObtain(unit->port_mutex);
+                ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port);
+                IExec->MutexRelease(unit->port_mutex);
+                if (!ioreq)
+                    break;
                 if (UnitTask_Dispatch(libBase, unit, ioreq))
                     need_kick = TRUE;
             }
@@ -426,7 +435,12 @@ void UnitTask_Entry(void)
     /* Drain any requests that arrived between the break signal and here */
     {
         struct IOStdReq *ioreq;
-        while ((ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port)) != NULL) {
+        for (;;) {
+            IExec->MutexObtain(unit->port_mutex);
+            ioreq = (struct IOStdReq *)IExec->GetMsg(unit->io_port);
+            IExec->MutexRelease(unit->port_mutex);
+            if (!ioreq)
+                break;
             ioreq->io_Error = IOERR_ABORTED;
             IExec->ReplyMsg((struct Message *)ioreq);
         }
@@ -438,29 +452,35 @@ void UnitTask_Entry(void)
     unit->io_signal_mask = 0;
     IExec->FreeSignal(isr_bit);
 
-    IExec->FreeSysObject(ASOT_PORT, unit->io_port);
-    unit->io_port      = NULL;
-    unit->io_port_mask = 0;
+    /* Null out io_port FIRST to prevent new AbortIO callers from entering,
+     * then free the mutex and port. */
+    {
+        struct MsgPort *port = unit->io_port;
+        unit->io_port      = NULL;
+        unit->io_port_mask = 0;
+
+        if (unit->port_mutex) {
+            IExec->FreeSysObject(ASOT_MUTEX, unit->port_mutex);
+            unit->port_mutex = NULL;
+        }
+        IExec->FreeSysObject(ASOT_PORT, port);
+    }
+
     DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: unit %lu exiting\n", unit->unit_num);
 
     /*
-     * Shutdown handshake: clear unit->task LAST (after all other teardown)
-     * so UnitTask_Shutdown's wait loop can safely detect "task has fully
-     * exited" by observing unit->task == NULL.
-     *
-     * Do NOT signal startMsg->parent_task here.  startMsg was stack-allocated
-     * in UnitTask_Start() and its storage was reclaimed the moment that
-     * function returned (at initial startup).  Dereferencing it now reads
-     * whatever value the caller's stack has since been reused for — typically
-     * harmless in debug builds because DPRINTF writes pad the caller's stack
-     * in a way that leaves parent_task readable-but-stale, but in release
-     * builds the stack has been fully recycled and Signal() ends up passing
-     * garbage to Exec's signal machinery, tripping a DSI deep inside
-     * dos.library.kmod the next time the system touches that memory (typically
-     * when the shell tries to fork another command).  UnitTask_Shutdown
-     * watches unit->task instead, so no exit signal is required.
+     * Shutdown handshake: capture the exit signal target, clear unit->task,
+     * then signal the shutdown caller.  If shutdown_exit_mask is 0 (rare:
+     * AllocSignal failed in the shutdown caller), fall back to CTRL_C so
+     * the caller's Wait(SIGBREAKF_CTRL_C) loop wakes.
      */
-    unit->task = NULL;
+    {
+        struct Task *exit_task = unit->shutdown_exit_task;
+        uint32       exit_mask = unit->shutdown_exit_mask;
+        unit->task = NULL;
+        if (exit_task)
+            IExec->Signal(exit_task, exit_mask ? exit_mask : SIGBREAKF_CTRL_C);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -490,20 +510,17 @@ BOOL UnitTask_Start(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *u
     startMsg.ready_mask  = ready_mask;
     startMsg.ready_bit   = ready_bit;
 
-    /* Create the task — name it after the unit number */
-    char taskName[32];
-    libBase->IUtility->SNPrintf(taskName, sizeof(taskName), "virtioscsi unit %lu", unit->unit_num);
+    /* Write the task name into the unit struct so it outlives this stack
+     * frame — CreateTaskTags stores the pointer (ln_Name), not a copy. */
+    libBase->IUtility->SNPrintf(unit->task_name, sizeof(unit->task_name),
+                                "virtioscsi unit %lu", unit->unit_num);
 
-    /* Create the task under Forbid so we can safely set tc_UserData before
-     * the scheduler picks it up. Forbid() prevents task switching but not
-     * interrupts; it's the standard pattern for this. */
-    IExec->Forbid();
-    struct Task *task = IExec->CreateTaskTags(taskName, 5, UnitTask_Entry, 16384,
+    /* Pass the start message via AT_Param1 — no Forbid/Permit needed.
+     * This is the same pattern the event task uses (virtio_events.c). */
+    struct Task *task = IExec->CreateTaskTags(unit->task_name, 5,
+                                              UnitTask_Entry, 16384,
+                                              AT_Param1, (uint32)&startMsg,
                                               TAG_DONE);
-    if (task) {
-        task->tc_UserData = (APTR)&startMsg;
-    }
-    IExec->Permit();
 
     if (!task) {
         DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Start: CreateTaskTags failed\n");
@@ -546,30 +563,36 @@ void UnitTask_Shutdown(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit
 
     DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Shutdown: stopping unit %lu task\n", unit->unit_num);
 
-    /* Free pre-allocated DMA buffers before stopping the task.
-     * The task must not be mid-I/O at this point (caller ensures last close). */
-    free_unit_dma(libBase, unit);
+    /* Signal-based exit handshake (same pattern as ShutdownEventQueue).
+     * Allocate a signal bit in THIS task's context; the unit task signals
+     * us on exit.  Avoids deprecated Forbid/Permit busy-wait. */
+    int8 bit = IExec->AllocSignal(-1);
+    uint32 mask = (bit >= 0) ? (1UL << bit) : 0;
 
-    /* No extra signal needed — simply signal CTRL_C and busy-wait.
-     * See comments below for rationale. */
-
+    unit->shutdown_exit_task = IExec->FindTask(NULL);
+    unit->shutdown_exit_mask = mask;
     unit->task_shutdown = TRUE;
+
     struct Task *t = unit->task; /* capture before it clears itself */
     IExec->Signal(t, SIGBREAKF_CTRL_C);
 
-    /*
-     * Busy-wait for the task to clear unit->task.
-     * This is acceptable because shutdown is rare (device close/expunge)
-     * and the unit task will exit promptly.
-     * A proper solution would require a dedicated shutdown signal bit stored
-     * in the unit struct, but that adds 8 bytes for a rarely-used path.
-     */
-    uint32 patience = 100000;
-    while (unit->task && patience-- > 0) {
-        /* yield by calling Forbid/Permit to give the other task a chance */
-        IExec->Forbid();
-        IExec->Permit();
+    if (mask) {
+        IExec->Wait(mask);
+        IExec->FreeSignal(bit);
+    } else {
+        /* Rare fallback: AllocSignal failed.  The exiting task sends
+         * SIGBREAKF_CTRL_C back when shutdown_exit_mask is 0. */
+        while (unit->task)
+            IExec->Wait(SIGBREAKF_CTRL_C);
     }
+
+    unit->shutdown_exit_task = NULL;
+    unit->shutdown_exit_mask = 0;
+
+    /* Free DMA buffers AFTER the task has fully exited.  Previously this
+     * ran before the exit signal, leaving dangling DMA pointers that the
+     * task's drain loop could dereference. */
+    free_unit_dma(libBase, unit);
 
     DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Shutdown: unit %lu task stopped\n", unit->unit_num);
 }

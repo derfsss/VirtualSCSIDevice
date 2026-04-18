@@ -3,6 +3,7 @@
 #include "virtio/virtio_scsi.h"
 #include "virtio/virtio_scsi_io.h"
 #include "virtio/virtqueue.h"
+#include "unit_discovery.h"
 #include "virtioscsi.h"
 #include <exec/exectags.h>
 #include <exec/memory.h>
@@ -154,6 +155,7 @@ static BOOL probe_and_add(struct VirtIOSCSIBase *libBase, uint32 target, uint32 
                 unit->lun_id       = lun;
                 unit->media_present = TRUE;
                 unit->announced    = FALSE;
+                init_dev_unit(IExec, unit);
                 libBase->units[free_slot] = unit;
                 DPRINTF(IExec,
                         "[virtioscsi:virtio_events.c] HOTPLUG: added unit %ld (T%lu L%lu) type=0x%02X\n",

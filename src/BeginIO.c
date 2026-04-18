@@ -274,16 +274,15 @@ LONG _manager_AbortIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
     DPRINTF(IExec, "[virtioscsi:BeginIO.c] AbortIO by '%s' ioreq=%p cmd=%u port=%p\n",
             callerName, ioreq, (uint32)ioreq->io_Command, ioreq->io_Message.mn_ReplyPort);
 
-    if (!unit || !unit->io_port)
+    if (!unit || !unit->io_port || !unit->port_mutex)
         return IOERR_NOCMD;
 
     /*
      * Attempt to remove the request from the unit's message port queue.
-     * Forbid() prevents task switching so we can safely traverse the list.
-     * If found, we reply with IOERR_ABORTED so the caller isn't left waiting.
-     * If not found, the request is already being processed — we can't abort it.
+     * The port_mutex serializes this traversal against the unit task's
+     * GetMsg loop.  Replaces deprecated Forbid/Permit per OS4 guidelines.
      */
-    IExec->Forbid();
+    IExec->MutexObtain(unit->port_mutex);
 
     struct Message *msg = (struct Message *)unit->io_port->mp_MsgList.lh_Head;
     struct Message *found = NULL;
@@ -300,7 +299,7 @@ LONG _manager_AbortIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         IExec->Remove((struct Node *)found);
     }
 
-    IExec->Permit();
+    IExec->MutexRelease(unit->port_mutex);
 
     if (found) {
         ioreq->io_Error = IOERR_ABORTED;

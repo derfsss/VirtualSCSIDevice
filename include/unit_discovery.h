@@ -10,4 +10,12 @@
  */
 uint32 DiscoverUnits(struct VirtIOSCSIBase *devBase);
 
+/*
+ * Initialize the embedded struct Unit inside a VirtIOUSCSIDevUnit to a sane,
+ * valid state.  Must be called after allocating a unit and setting unit_num,
+ * target_id, lun_id, and media_present.  Used by both boot-time discovery
+ * (DiscoverUnits) and hot-add (probe_and_add).
+ */
+void init_dev_unit(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit);
+
 #endif /* UNIT_DISCOVERY_H */

@@ -280,7 +280,7 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
      */
     uint32 part_block = ((uint32)buf[0x1C] << 24) | ((uint32)buf[0x1D] << 16) |
                         ((uint32)buf[0x1E] << 8)  |  (uint32)buf[0x1F];
-    if (part_block != 0xFFFFFFFFU && part_block > 0 && part_block < cyls) {
+    if (part_block != 0xFFFFFFFFU && part_block > 0 && part_block < unit->total_blocks) {
         uint8 *pbuf = IExec->AllocVecTags(bs, AVT_Type, MEMF_SHARED,
                                           AVT_ClearWithValue, 0, TAG_END);
         if (pbuf) {
