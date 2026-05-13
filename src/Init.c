@@ -26,10 +26,14 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
         devBase->units[i] = NULL;
     }
 
-    /* Open expansion.library and get PCI interface */
-    devBase->ExpansionBase = iexec->OpenLibrary("expansion.library", 54);
+    /* Open expansion.library and get PCI interface.
+     * v53 minimum: covers the 53.54 install CD through FE Update 2.  FE U3
+     * bumps the kernel-embedded copy to 54.1, but the PCIIFace methods used
+     * here (FindDeviceTags, GetResourceRange, ReadConfig*, WriteConfig*,
+     * FreeDevice) have been stable since well before 53.1, so v53 is enough. */
+    devBase->ExpansionBase = iexec->OpenLibrary("expansion.library", 53);
     if (!devBase->ExpansionBase) {
-        DPRINTF(iexec, "[virtioscsi:Init.c] Init: Failed to open expansion.library v54.\n");
+        DPRINTF(iexec, "[virtioscsi:Init.c] Init: Failed to open expansion.library v53.\n");
         return NULL;
     }
     devBase->IPCI = (struct PCIIFace *)iexec->GetInterface(devBase->ExpansionBase, "pci", 1, NULL);
