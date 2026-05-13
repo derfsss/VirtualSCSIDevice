@@ -6,3 +6,17 @@ debug_log.txt
 docs/bin/
 docs/virtio-v1.2.pdf
 docs/virtio-v1.2.txt
+
+# Local IDE / editor / agent state (machine-specific or session-local)
+.clangd
+.claude/
+
+# Internal planning, agent handovers, scratch notes — not for publication
+AGENT_HANDOVER.md
+AMIGAOS41FE_KNOWLEDGE.md
+PERF_PLAN.md
+TEST_PLAN.md
+tmp/
+docs/phase*_*.md
+docs/v*_implementation_plan.md
+docs/performance_plan*.md
