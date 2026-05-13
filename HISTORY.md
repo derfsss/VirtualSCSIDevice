@@ -477,3 +477,289 @@ Added DPRINTF to all silent error paths across command handlers:
 - `src/Init.c` — boot debug line uses DEVVERSIONSTRING_FULL
 - `Makefile` — BUILD_DATE/BUILD_TIME via date command
 - `README.md`, `README_os4depot.txt` — boot drive installation instructions, diskboot.config, v53.8 changelog
+
+## v1.9 Modern MMIO on AmigaOne, Hot-Plug, CD Media Change (April 2026)
+
+After v53.8 the display version was renumbered back to 1.x (boot-drive
+support is a matter of resident priority + `diskboot.config`, not a
+major-version concern). `lib_Version` stays at 53 in the Resident
+struct so OpenDevice and the OS4 filesystems still accept the driver.
+
+### Modern VirtIO MMIO on AmigaOne
+
+- **64-bit BAR firmware-bug workaround** in `pci_discovery.c`. Before
+  v1.9, BAR4 (the VirtIO modern MMIO BAR) was a 64-bit prefetchable
+  BAR whose high DWORD ended up at `0xFFFFFFFF` on AmigaOne: BBoot
+  doesn't program the high DWORD, and AmigaOS's later PCI enumerator
+  performs a sizing probe (write `0xFFFFFFFF`, read size, write
+  address back) but leaves the high DWORD at the probe value. Net
+  effect: BAR4 landed at `0xFFFFFFFF84204000` — outside Articia S's
+  decoded PCI memory window, so MMIO reads returned `0xFF` and writes
+  were silently dropped.
+- Fix: read BAR5 (config offset `0x24`) at discovery; if it's
+  `0xFFFFFFFF`, write 0 back via PCI config before calling
+  `GetResourceRange(4)`. Root cause isolated via QEMU `info pci`/
+  `info mtree` compared across Pegasos2 (VOF programs BAR5=0),
+  SAM460ex (VOF programs BAR5=0), and AmigaOne (no firmware before
+  BBoot).
+- Result: AmigaOne now runs modern MMIO (≈10–20× faster than legacy
+  port I/O on Pegasos2 baselines). Legacy I/O remains the automatic
+  fallback when the MMIO probe fails for any reason.
+
+### VirtIO feature negotiation
+
+- **VIRTIO_RING_F_INDIRECT_DESC** (bit 28) accepted on the modern
+  MMIO path. Scatter-gather chains now consume a single vring slot
+  regardless of SG count.
+- Fixed pre-existing byte-swap bugs in the indirect implementation:
+  indirect-table writes wrap through `vr64`/`vr32`/`vr16` matching
+  negotiated endianness, free-list `next` captured before overwrite,
+  NEXT chaining added between table entries.
+- INDIRECT_DESC disabled on the legacy I/O path (QEMU reads indirect
+  entries as LE while PPC writes native BE) and on VQ1 (eventq buffers
+  are single-region so indirection is wasted descriptor pressure).
+- **VIRTIO_SCSI_F_HOTPLUG / F_CHANGE** (bits 1, 2) negotiated. VQ1
+  (eventq) now carries asynchronous device events.
+
+### Event queue consumer
+
+- Dedicated consumer task at priority 20 drains VQ1 on ISR signal,
+  parses events, and re-posts buffers. `libBase` passed via
+  `AT_Param1` on `CreateTaskTags` instead of `tc_UserData`.
+- `VIRTIO_SCSI_T_TRANSPORT_RESET` with reason `RESCAN` INQUIRY-probes
+  a new target/LUN, allocates a unit in the first free `units[]` slot,
+  initialises `dev_Unit`, and announces to `mounter.library`.
+- `VIRTIO_SCSI_T_TRANSPORT_RESET` with reason `REMOVED` marks the
+  unit's media as not present, wakes any held `TD_ADDCHANGEINT`,
+  and calls `DenounceDevice` so mounter tears down the DOSNode. The
+  unit slot stays allocated so a subsequent `RESCAN` on the same
+  target/LUN re-uses the same unit number (AmigaOS DOSNode lifetime
+  rule).
+- `VIRTIO_SCSI_T_PARAM_CHANGE` with ASC `0x28` (medium may have
+  changed) / `0x3A` (medium not present) bumps the per-unit
+  `change_count`, toggles `media_present`, invalidates cached
+  geometry, and replies to any held `TD_ADDCHANGEINT` so
+  `CDFileSystem` (or whichever filesystem holds it) wakes up and
+  re-mounts. Full round-trip verified with `(qemu) eject`/`change`.
+
+### Mounter integration for hot-added disks
+
+- New module `src/virtio/virtio_mounter.c` owns the
+  `mounter.library` handle with lazy open (first hot-add only, never
+  at boot — opening mounter at priority 0 during Init caused
+  `ramlib.support` DSI crashes via the v53.8 era).
+- Per-unit `announced` flag tracks ownership. `_manager_Expunge`
+  walks all units and denounces anything still announced before
+  dropping the interface and closing the library.
+- DOS-name prefix hint `VSCSI` passed via `MNTA_DosNamePrefixHint`,
+  so hot-added disks appear as `VSCSI<n>:` on the Workbench (or
+  with their RDB volume name if they have one).
+- Non-fatal if `mounter.library` is unavailable: units remain
+  reachable via `OpenDevice("virtioscsi.device", N, ...)`, only the
+  auto-mount step is skipped.
+
+### Stability
+
+- **Release-build DSI on AmigaOne** (`e8dadbe`): dangling `startMsg`
+  pointer in `UnitTask_Entry` only manifested in `-O2` builds because
+  the optimiser kept the stack slot live; debug builds (no `-DDEBUG`
+  needed — just the lack of release-only optimisation) happened to
+  keep the address valid until the task read it. Pass the message
+  through the task's address space lifetime correctly.
+- **Shell-run diagnostic**: `_start()` prints
+  `"virtioscsi.device cannot be executed from a shell …"` via
+  `IExec->DebugPrintF` and returns 20 (`RETURN_FAIL`) instead of
+  silently returning 0.
+
+### Build / distribution
+
+- Release builds preserve an unstripped `virtioscsi.device.debug`
+  alongside the stripped `virtioscsi.device`; the LHA ships both so
+  diagnostic sessions can resolve symbols without rebuilding.
+- LHA drops the `Tests/` folder — test binaries stay in `build/` for
+  developers but don't need to inflate the end-user download.
+
+### Regression harness
+
+- `tools/qemu-regression/run_test_matrix.py`: drives one QEMU per
+  target machine (AmigaOne, Pegasos2, SAM460ex), injects a chosen
+  driver binary into the kickstart zip, adds the `diskboot.config`
+  entry so `diskboot.kmod` auto-mounts the virtio-scsi RDB
+  partition, boots to Workbench, and runs SerialShell checks over
+  TCP. Three pass layers: driver-level (`NSCMD_DEVICEQUERY` +
+  `test_inquiry`), DOS mount (`info` reports `[Mounted]`), full
+  filesystem round-trip (write/read/list/delete a token file).
+- `tools/qemu-regression/stress_suite.py`: Tier 1 data
+  integrity + throughput (SHA round-trips, library-tree copy,
+  100-iteration loop), Tier 2 redesigned deterministic concurrency
+  (three parallel on-volume copies polled to completion), Tier 3
+  hot-plug + double-Open regression guards, Tier 4 baseline-normalised
+  memory-leak watch (run the same workload on `SYS:` first, then on
+  SCSI:, compare drift; pass = SCSI extra drift < 2 MB AND tail rate
+  ≤ 3× IDE baseline). Tier 5 v1.9-release-specific checks plus 9P
+  share when `--with-9p` is set.
+
+### Files Changed
+
+- `src/pci/pci_discovery.c` — BAR5 high-DWORD fix-up before
+  `GetResourceRange(4)`
+- `src/virtio/virtio_events.c` — new event-queue consumer task
+- `src/virtio/virtio_mounter.c` — new module: lazy
+  `mounter.library` integration
+- `src/virtio/virtio_init.c` — INDIRECT_DESC + HOTPLUG/CHANGE
+  feature bits accepted on modern path
+- `src/Expunge.c` — denounce-all-announced cleanup pass
+- `include/version.h` — display version `1.9`, lib_Version pinned
+  at 53
+- `Makefile` — debug-variant target, LHA layout
+- `tools/qemu-regression/` — new regression + stress harnesses
+
+## v1.10 SFS 1.290 Compatibility, SandboxVM, Wider AmigaOS Compatibility (May 2026)
+
+### SFS 1.290 mount fix
+
+SmartFilesystem 1.290 was silently refusing to mount any virtio-scsi
+partition after the v53.8 → 1.x renumber. Root-cause sweep:
+
+- `lib_Version` must be ≥50: SFS 1.290 has an explicit version check.
+  `include/version.h` now pins `DEVVER = 53` even though the display
+  version is 1.10 (display goes in the `IdString`, the numeric
+  `lib_Version` is what SFS reads).
+- The Resident struct must live in writable `.data`: SFS's checks
+  follow the OS4 IDE-driver convention of `Resident` in `.data`.
+  Moved out of `.rodata`.
+- BeginIO must be reachable at offset `-30` via a 68k jump table:
+  added `CLT_Vector68K` + `CLT_NoLegacyIFace` to the library
+  construction tags so the LVO-style jump table is materialised.
+- `DriveGeometry` must be fully zeroed before filling: SFS validates
+  `dg_Reserved1` / `dg_Reserved2`. Zero the whole struct first.
+- `dg_BufMemType` should be `MEMF_PUBLIC|MEMF_LOCAL`: keeps the
+  DOSEnvVec buffer in BPTR-safe low RAM.
+- `TD_GETDRIVETYPE` must return `DRIVE3_5`: matches `a1ide.device`'s
+  reported type. SFS doesn't care that the disk isn't an actual
+  floppy, only that the type matches a known disk-driver value.
+- `dev_Unit` must be initialised with `NT_MSGPORT` + `UNITF_ACTIVE`:
+  factored out as `init_dev_unit()` and called from both
+  `DiscoverUnits` (boot scan) and `probe_and_add` (hot-add path).
+  The latter was previously leaving `ln_Type=0`, which is what made
+  hot-added units fail to mount specifically with SFS.
+
+After this sweep, SFS 1.290, FFS2, and CDFileSystem all mount
+virtio-scsi partitions across the full QEMU machine matrix.
+
+### RDB geometry caching
+
+`ensure_rdb_geometry_cached()` reads the RDB header and first
+`PartitionBlock`, so `TD_GETGEOMETRY` reports CHS matching the
+on-disk partition layout rather than the raw `READ CAPACITY` block
+count. Required because some filesystems (and `MediaToolbox`) reject
+geometry that disagrees with the RDB they're about to read.
+
+### SandboxVM compatibility
+
+When the driver runs as a resident under SandboxVM on AmigaOne X5000
+(`sandboxvm -r virtioscsi.device`), the host's private IExec sees
+guest allocations as vmem (extmem ≥ 2 GB) by default. The kernel's
+`StartDMA`/`GetDMAList` refuse to map those, so the driver's
+resident-init was failing on the very first vring `StartDMA` call
+and `CLT_InitFunc` returned NULL.
+
+SandboxVM ships a private `AllocVecTags` tag,
+`SBV_AVT_HostDMA = 0x80535601`, that routes the allocation through
+the host's real allocator producing a buffer the kernel will
+DMA-map. The tag value is above `TAG_USER + small offsets` so on
+native AOS4 the utility.library tag walker treats it as unknown and
+silently ignores it.
+
+The tag was added to every `AllocVecTags` whose buffer flows into
+`StartDMA`:
+
+- `src/virtio/virtqueue.c` — vring memory + indirect descriptor table
+- `src/unit_task.c` — per-slot req / resp / bounce buffers
+- `src/virtio/virtio_events.c` — event pool
+
+Defined locally with `#ifndef` guard so this driver source has no
+build dependency on the SandboxVM tree. Value must stay in sync
+with `SandboxVM/VM-OS4/include/sbvm_tags.h`.
+
+Validated on X5000: with the old binary, `sandboxvm -r
+virtioscsi.device` failed at the first `StartDMA` with
+"buffer not DMA-mappable" and `CLT_InitFunc` returned NULL. With
+this build, init completes through `STATUS=DRIVER_OK`.
+
+### Forbid/Permit eliminated
+
+- `AbortIO`: `MutexObtain`/`MutexRelease` replace `Forbid`/`Permit`
+  around the port queue traversal.
+- `UnitTask_Start`: `AT_Param1` replaces the
+  `Forbid`+`tc_UserData` shuffle for task startup parameter passing.
+- `UnitTask_Shutdown`: signal-based handshake (caller `AllocSignal`s
+  a bit in its own context and `Wait`s; worker signals on exit)
+  replaces the busy-wait `Forbid` loop.
+
+### DMA use-after-free on shutdown
+
+`free_unit_dma()` was being called before the unit task fully
+exited, so the drain loop accessed freed DMA pointers in the window
+between free and task exit. Moved the call to after task exit;
+shutdown signal handshake ensures correct ordering.
+
+### Misc correctness
+
+- Task name now stored in the unit struct rather than passed as a
+  stack-local string. `CreateTaskTags` stores the pointer it
+  receives (not a copy), so the stack-local was a dangling pointer
+  the moment `UnitTask_Start` returned.
+- `CMD_STOP` / `CMD_START` added to the NSD `supported_commands[]`.
+- 14 missing entries added to `GetCommandName()` so debug logging is
+  complete across the whole command set.
+- Partition block bound check uses `total_blocks` instead of
+  `cyls`. The old check rejected accesses beyond cylinder count
+  rather than beyond actual capacity.
+
+### expansion.library minimum lowered to v53
+
+Previously required v54 (only present in FE Update 3 — kernel-embedded
+`expansion.library 54.1`, July 2023). The 53.54 install CD, FE
+Update 1, and FE Update 2 all ship `expansion.library 53.1` (frozen
+since 16.6.2008). The old gate blocked the driver on every release
+prior to U3, on every platform — empirically the user reported it
+"didn't work on SAM460 QEMU Update 2 but did for Update 3", which
+turned out to be the version gate rather than any kernel-level bug.
+
+The `PCIIFace` methods used (`FindDeviceTags`, `GetResourceRange`,
+`ReadConfig*`/`WriteConfig*`, `FreeDevice`) have been stable since
+well before 53.1, so v53 is a safe floor. Cross-checked by extracting
+`expansion.library` version metadata from the per-platform `kernel`
+binaries inside the 53.54 install CD, U1, U2, and U3 archives.
+
+### Build / CI
+
+- Makefile produces stripped release and unstripped debug binaries in
+  one invocation; both ship in the LHA.
+- GitHub Actions runs `make` on every push and PR using
+  `walkero/amigagccondocker:os4-gcc11` (the same image developers
+  use locally). Workflow at `.github/workflows/build.yml`.
+
+### Files Changed
+
+- `include/version.h` — `DEVICE_REVISION = 10`, display version 1.10,
+  `lib_Version` pinned at 53
+- `src/device.c` — Resident struct moved to `.data`,
+  `CLT_Vector68K` + `CLT_NoLegacyIFace` added to library tags
+- `src/Init.c` — `expansion.library` minimum v53,
+  `init_dev_unit()` helper called for boot scan
+- `src/unit_discovery.c` — `init_dev_unit()` shared with hot-add
+- `src/exec_cmds/cmd_td_getgeometry.c` —
+  `ensure_rdb_geometry_cached()` plus full zero of `DriveGeometry`,
+  `dg_BufMemType`, `TD_GETDRIVETYPE` returns `DRIVE3_5`
+- `src/virtio/virtqueue.c`, `src/unit_task.c`,
+  `src/virtio/virtio_events.c` — `SBV_AVT_HostDMA` on DMA
+  allocations
+- `src/BeginIO.c`, `src/unit_task.c` — Forbid/Permit removed,
+  Mutex / `AT_Param1` / signal handshake replacements
+- `src/Expunge.c` — `free_unit_dma()` ordering fix
+- `Makefile` — dual-build release + debug
+- `.github/workflows/build.yml` — new CI build
+- `README.md`, `README_os4depot.txt` — v1.10 changelog, transport
+  description, requirements

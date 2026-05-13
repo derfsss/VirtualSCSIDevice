@@ -21,7 +21,7 @@ The driver auto-detects the best VirtIO transport for each QEMU machine type —
 
 ## Features
 
-- **Dual VirtIO transport** — Legacy PCI and Modern VirtIO 1.0, auto-detected at boot via MMIO probe (Pegasos2 gets modern, AmigaOne gets legacy, same QEMU config for both)
+- **Dual VirtIO transport** — Legacy PCI and Modern VirtIO 1.0, auto-detected at boot via MMIO probe. All three supported QEMU machines run the modern path; legacy is the automatic fallback if the MMIO probe fails. Same QEMU config works on every machine.
 - **Interrupt-driven I/O** — uses PCI INTx interrupts; no CPU-burning polling loops
 - **Async I/O** — per-unit exec task with message port; `BeginIO` returns immediately for slow commands
 - **Multi-disk** — discovers up to 8 SCSI targets at boot, each announced to `mounter.library`
@@ -41,8 +41,9 @@ The driver auto-detects the best VirtIO transport for each QEMU machine type —
 
 ## Requirements
 
-- AmigaOS 4.1 Final Edition (PowerPC)
-- QEMU with a supported machine type (`amigaone`, `pegasos2`, or `sam460ex`)
+- AmigaOS 4.1 Final Edition (PowerPC). The driver opens `expansion.library` v53 (frozen since 2008), so it loads on every FE release from the 53.54 install CD through Update 3.
+- QEMU with a supported machine type (`amigaone`, `pegasos2`, or `sam460ex`).
+- Also runs as a SandboxVM resident on AmigaOne X5000 (v1.10+).
 
 ---
 
@@ -267,6 +268,18 @@ tests/
 ---
 
 ## Changelog
+
+### v1.10 — 2026-05-13
+- **expansion.library minimum lowered to v53**: Previously required v54, which only ships in FE Update 3 (kernel-embedded `expansion.library 54.1`, July 2023). Install CD 53.54, Update 1, and Update 2 all carry `expansion.library 53.1` (frozen since 16.6.2008), so the old gate blocked the driver from loading on every release prior to U3 on every platform. The `PCIIFace` methods used (`FindDeviceTags`, `GetResourceRange`, `ReadConfig*`/`WriteConfig*`, `FreeDevice`) have been stable since well before 53.1, so v53 is a safe floor.
+- **SFS 1.290 compatibility**: 68k jump-table via `CLT_Vector68K`+`CLT_NoLegacyIFace` (so SFS's `BeginIO`-at-(-30) call site lands on a real handler), `Resident` struct relocated to `.data` to match shipping OS4 IDE drivers, `dg_BufMemType = MEMF_PUBLIC|MEMF_LOCAL` for BPTR-safe low-RAM buffers, `TD_GETDRIVETYPE` returns `DRIVE3_5` (matching `a1ide.device`), `lib_Version` pinned to 53 so SFS's version check accepts us. Without this, SFS 1.290 silently refuses to mount any partition.
+- **RDB geometry caching**: `ensure_rdb_geometry_cached()` parses the RDB header and first `PartitionBlock`, so `TD_GETGEOMETRY` reports CHS matching the on-disk partition layout instead of the raw `READ CAPACITY` block count.
+- **SandboxVM compatibility**: Every `AllocVecTags` whose buffer flows into `StartDMA` is tagged with `SBV_AVT_HostDMA` (`0x80535601`). On SandboxVM (X5000 host) this routes the allocation through the host's real allocator producing a DMA-mappable buffer; on native AOS4 the tag value sits in the unknown-tag range and `utility.library`'s tag walker silently ignores it. Same source, dual use. Validated as a SandboxVM resident driver on X5000.
+- **Hot-add SFS mount fix**: Hot-added units now properly initialise `dev_Unit` (`ln_Type=NT_MSGPORT`, `UNITF_ACTIVE`). Before this, `probe_and_add` left these fields zero so SFS rejected hot-added disks as malformed. Shared `init_dev_unit()` helper between `DiscoverUnits` and the hot-add path.
+- **DMA use-after-free on shutdown**: `free_unit_dma()` now runs after the unit task has fully exited, so the drain loop never accesses freed DMA pointers.
+- **Forbid/Permit eliminated**: `MutexObtain`/`MutexRelease` replace `Forbid`/`Permit` around the port queue in `AbortIO`. Task start uses `AT_Param1` instead of the `tc_UserData` shuffle. Shutdown is a proper cross-task signal handshake. Brings the driver in line with current OS4 guidance.
+- **Misc correctness**: Task name now stored in the unit struct (the stack-local string was a dangling pointer once `CreateTaskTags` returned — `CreateTaskTags` stores the pointer, not a copy). `CMD_STOP`/`CMD_START` added to the NSD `supported_commands[]`, 14 missing entries added to `GetCommandName()` for complete debug logging. Partition block bound checks use `total_blocks` rather than `cyls`.
+- **Build**: Makefile produces both stripped release and unstripped debug binaries in one invocation; both ship in the LHA.
+- **CI**: GitHub Actions runs `make` on every push/PR using `walkero/amigagccondocker:os4-gcc11` (the same image developers use locally).
 
 ### v1.9 — 2026-04-14
 - **Modern VirtIO MMIO on AmigaOne**: Runtime workaround in `pci_discovery.c` for a 64-bit BAR firmware bug. Before v1.9, BAR4's upper 32 bits were left at `0xFFFFFFFF` on AmigaOne (BBoot doesn't program the high DWORD and AmigaOS's PCI enumerator leaves it at the probe value), so VirtIO's prefetchable MMIO region ended up outside Articia's decoded PCI memory window. The driver now reads BAR5 at device discovery; if it reads `0xFFFFFFFF`, it writes 0 back via PCI config before calling `GetResourceRange(4)`. Root cause isolated via QEMU 10.2.2 `info pci`/`info mtree` compared across Pegasos2 (VOF programs BAR5=0) and AmigaOne (no firmware runs before BBoot). AmigaOne now uses the ~10–20× faster modern MMIO transport.

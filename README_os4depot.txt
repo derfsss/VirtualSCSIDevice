@@ -14,10 +14,11 @@ type - no platform-specific QEMU configuration required. Tested on all
 three QEMU PowerPC machines:
 
   Pegasos2  (MV64361 bridge)   - modern VirtIO 1.0 MMIO
-  AmigaOne  (Articia S bridge) - legacy VirtIO I/O port access
-  SAM460ex                     - legacy VirtIO I/O port access
+  AmigaOne  (Articia S bridge) - modern VirtIO 1.0 MMIO (v1.9+)
+  SAM460ex                     - modern VirtIO 1.0 MMIO
 
-The correct transport is auto-detected at boot. VirtIO SCSI disks are
+All three machines run the modern path; legacy PCI I/O is the
+automatic fallback if the MMIO probe fails. VirtIO SCSI disks are
 faster and more flexible than emulated IDE, and this driver makes them
 available to AmigaOS as standard trackdisk-compatible block devices.
 Partitions are discovered and mounted at boot automatically, and standard
@@ -26,8 +27,11 @@ filesystems (FFS2, SFS, etc.) work normally.
 
 REQUIREMENTS
 ------------
-- AmigaOS 4.1 Final Edition (PowerPC)
-- QEMU with a supported machine type (amigaone, pegasos2, or sam460ex)
+- AmigaOS 4.1 Final Edition (PowerPC). Driver opens expansion.library
+  v53, so it loads on every FE release from the 53.54 install CD
+  through Update 3.
+- QEMU with a supported machine type (amigaone, pegasos2, or sam460ex).
+- Also runs as a SandboxVM resident on AmigaOne X5000 (v1.10+).
 
 
 QEMU SETUP
@@ -76,7 +80,12 @@ FEATURES
 - Pre-allocated DMA buffers for low-latency I/O hot path
 - Bounce buffer ring for zero-overhead small I/O
 - Interrupt coalescing via used_event batching
-- No deprecated AmigaOS APIs used
+- VIRTIO_F_INDIRECT_DESC for one-descriptor scatter-gather chains
+- Hot-plug (device_add / device_del) and CD media change
+  (eject / change) handled at runtime via the VirtIO event queue
+- SFS 1.290 / FFS2 / CDFileSystem all mount and remount cleanly
+- SandboxVM (X5000 host) compatibility via SBV_AVT_HostDMA tagging
+- No deprecated AmigaOS APIs used (no Forbid/Permit, no CachePreDMA)
 
 
 INSTALLATION
@@ -180,6 +189,14 @@ v1.10 (17.04.2026)
     Hot-plug tests skip gracefully when QEMU occupies all targets.
     Shell-run test checks serial log for diagnostic. 9P tier detects
     already-mounted SHARED:.
+  - SandboxVM compatibility (X5000 host): every AllocVecTags whose
+    buffer flows into StartDMA is tagged with SBV_AVT_HostDMA. No-op
+    on native AOS4 (the tag value is unknown so utility.library
+    ignores it); on SandboxVM it routes the allocation through the
+    host allocator so the buffer is DMA-mappable.
+  - expansion.library minimum lowered to v53. v54 only ships in FE
+    Update 3; with v53 the driver loads on every FE release from the
+    53.54 install CD onward (CD, U1, U2, U3) on every platform.
   - Validated 14/14 on AmigaOne, Pegasos2, and SAM460ex.
 
 v1.9 (15.04.2026)
