@@ -1,0 +1,25 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: walkero/amigagccondocker:os4-gcc11
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: make
+        run: make
+
+      - name: verify outputs
+        run: |
+          test -s build/virtioscsi.device
+          test -s build/virtioscsi.device.debug
+          ls -la build/virtioscsi.device build/virtioscsi.device.debug
