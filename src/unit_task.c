@@ -9,7 +9,16 @@
 #include <exec/exectags.h>
 #include <exec/memory.h>
 
-/* Forward declaration — dispatch is defined below.
+/* SandboxVM-private AllocVecTags tag -- see comment in virtqueue.c.
+ * Routes DMA buffers through the SandboxVM host's real allocator so
+ * StartDMA/GetDMAList accept them. Unknown tag value on native AOS4
+ * (silently ignored by the utility.library tag walker). Must stay
+ * in sync with SandboxVM/VM-OS4/include/sbvm_tags.h. */
+#ifndef SBV_AVT_HostDMA
+#define SBV_AVT_HostDMA        (0x80535601u)
+#endif
+
+/* Forward declaration -- dispatch is defined below.
  * Returns TRUE if at least one VirtIOSCSI_Submit() succeeded (kick pending). */
 static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                                struct VirtIOUSCSIDevUnit *unit,
@@ -28,6 +37,7 @@ static BOOL alloc_one_slot(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *u
     unit->req_bufs[s] = IExec->AllocVecTags(sizeof(struct virtio_scsi_req_cmd),
                                              AVT_ClearWithValue, 0,
                                              AVT_Type, MEMF_SHARED,
+                                             SBV_AVT_HostDMA, 0,
                                              TAG_DONE);
     if (!unit->req_bufs[s])
         return FALSE;
@@ -35,6 +45,7 @@ static BOOL alloc_one_slot(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *u
     unit->resp_bufs[s] = IExec->AllocVecTags(sizeof(struct virtio_scsi_resp_cmd),
                                               AVT_ClearWithValue, 0,
                                               AVT_Type, MEMF_SHARED,
+                                              SBV_AVT_HostDMA, 0,
                                               TAG_DONE);
     if (!unit->resp_bufs[s]) {
         IExec->FreeVec(unit->req_bufs[s]);
@@ -133,6 +144,7 @@ static BOOL alloc_one_bounce(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit 
     unit->bounce_bufs[s] = (uint8 *)IExec->AllocVecTags(BOUNCE_BUF_SIZE,
                                                           AVT_ClearWithValue, 0,
                                                           AVT_Type, MEMF_SHARED,
+                                                          SBV_AVT_HostDMA, 0,
                                                           TAG_DONE);
     if (!unit->bounce_bufs[s])
         return FALSE;

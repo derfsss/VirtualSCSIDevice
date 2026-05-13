@@ -24,6 +24,27 @@
 
 #define VIRTIO_PCI_VRING_ALIGN 4096
 
+/*
+ * SandboxVM-private AllocVecTags tag. When this driver runs under
+ * SandboxVM (via `sandboxvm -r virtioscsi.device`), the private IExec
+ * sees this tag and routes the allocation through the host's real
+ * allocator instead of guest vmem, so the returned buffer is in the
+ * host address space and therefore valid for StartDMA / GetDMAList.
+ * Without it, vring + indirect-descriptor buffers come out of guest
+ * vmem (extmem >= 2GB) which the kernel's IOMMU plumbing refuses to
+ * DMA-map -- the driver's resident-init then returns NULL and the
+ * device never enumerates.
+ *
+ * On native AOS4 the tag value is above TAG_USER + small offsets
+ * (0x80535600 range), so the utility.library tag walker treats it
+ * as an unknown tag and silently ignores it. Same-source, dual-use.
+ *
+ * Defined locally so this driver source has no build dependency on
+ * the SandboxVM tree. Value must stay in sync with
+ * SandboxVM/VM-OS4/include/sbvm_tags.h.
+ */
+#define SBV_AVT_HostDMA        (0x80535601u)
+
 struct virtqueue *VirtQueue_Allocate(struct ExecIFace *IExec, uint32 queue_index, uint32 queue_size)
 {
     /* Calculate sizes per the Legacy vring formula */
@@ -35,9 +56,15 @@ struct virtqueue *VirtQueue_Allocate(struct ExecIFace *IExec, uint32 queue_index
     uint32 used_size = sizeof(uint16) * 3 + sizeof(struct vring_used_elem) * queue_size;
     uint32 total_mem = used_offset + used_size;
 
-    /* Over-allocate by one page for manual alignment */
+    /* Over-allocate by one page for manual alignment. SBV_AVT_HostDMA
+     * tag is required so SandboxVM-hosted runs get a host-heap (DMA-
+     * mappable) buffer; on native AOS4 the tag is ignored. */
     uint32 alloc_size = total_mem + VIRTIO_PCI_VRING_ALIGN;
-    void *raw = IExec->AllocVecTags(alloc_size, AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED, TAG_DONE);
+    void *raw = IExec->AllocVecTags(alloc_size,
+                                    AVT_ClearWithValue, 0,
+                                    AVT_Type, MEMF_SHARED,
+                                    SBV_AVT_HostDMA, 0,
+                                    TAG_DONE);
 
     if (!raw) {
         DPRINTF(IExec, "[virtioscsi:virtqueue.c] VQ%lu: ring alloc failed (%lu bytes)\n", queue_index, alloc_size);
@@ -167,7 +194,10 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
          */
         struct vring_indirect_desc *itbl =
             IExec->AllocVecTags(sizeof(struct vring_indirect_desc) * total,
-                                AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED, TAG_DONE);
+                                AVT_ClearWithValue, 0,
+                                AVT_Type, MEMF_SHARED,
+                                SBV_AVT_HostDMA, 0,
+                                TAG_DONE);
 
         if (itbl) {
             /* Fill the indirect table.  Entries are in device-visible memory

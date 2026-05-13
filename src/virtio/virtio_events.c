@@ -9,6 +9,15 @@
 #include <exec/memory.h>
 #include <exec/tasks.h>
 
+/* SandboxVM-private AllocVecTags tag -- see comment in virtqueue.c.
+ * Routes DMA buffers through the SandboxVM host's real allocator so
+ * StartDMA/GetDMAList accept them. Unknown tag value on native AOS4
+ * (silently ignored by the utility.library tag walker). Must stay
+ * in sync with SandboxVM/VM-OS4/include/sbvm_tags.h. */
+#ifndef SBV_AVT_HostDMA
+#define SBV_AVT_HostDMA        (0x80535601u)
+#endif
+
 /*
  * Phase 9: VirtIO SCSI event queue handling.
  *
@@ -446,6 +455,7 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
     libBase->event_pool = IExec->AllocVecTags(libBase->event_pool_size,
                                               AVT_Type, MEMF_SHARED,
                                               AVT_ClearWithValue, 0,
+                                              SBV_AVT_HostDMA, 0,
                                               TAG_END);
     if (!libBase->event_pool) {
         DPRINTF(IExec, "[virtioscsi:virtio_events.c] event pool alloc failed\n");
