@@ -40,45 +40,59 @@ void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
         return;
     }
 
-    /* Best-effort read of block 0; if it has a valid RDSK we'll use the
-     * physical CHS the disk declares for itself instead of a hardcoded
-     * shape that might fight the downstream partition blocks. */
-    (void)ensure_rdb_geometry_cached(libBase, unit);
-
     if (unit && unit->geometry_valid) {
-        uint32 heads, sectors_per_track, cylinders;
-
-        if (unit->rdb_geometry_valid) {
-            /* Report whatever the RDB declares.  This keeps our
-             * TD_GETGEOMETRY consistent with every PartitionBlock on
-             * the disk, which is what filesystem handlers compare
-             * against during mount. */
-            heads             = unit->rdb_phys_heads;
-            sectors_per_track = unit->rdb_phys_sectors;
-            cylinders         = unit->rdb_phys_cyls;
-        } else {
-            /* No RDB -- use "linear" geometry.  1 head × 1 sector per
-             * track makes cylinder == LBA, which any partition layout
-             * written later by HDToolbox will naturally match (tools
-             * re-probe geometry at RDB-creation time). */
-            heads             = 1;
-            sectors_per_track = 1;
-            uint64 c = unit->total_blocks;
-            if (c > 0xFFFFFFFFULL) c = 0xFFFFFFFFULL;
-            cylinders = (uint32)c;
-            if (cylinders == 0) cylinders = 1;
+        /*
+         * Synthesize a LOGICAL CHS that multiplies to total_blocks exactly,
+         * matching the scheme sii3112ide.device uses.  Media's "Logical
+         * size" panel computes disk size as dg_Cylinders * dg_CylSectors *
+         * dg_SectorSize; any rounding loss there produces the "Total
+         * sectors: -NNN" artifact and a slightly-undersized total disk
+         * size in the UI.  Using a power-of-2 cyl_sectors divisor of
+         * total_blocks guarantees no loss.
+         *
+         * We deliberately do NOT use the RDB-declared physical CHS here
+         * (which Media reads from disk separately for its "Physical data"
+         * panel).  Filesystems do their own LBA math via PartitionBlock's
+         * de_Surfaces / de_BlocksPerTrack, so TD_GETGEOMETRY's CHS only
+         * needs to encode the size correctly -- it doesn't need to match
+         * RDB.  sii3112ide proves this works in practice.
+         */
+        uint64 t = unit->total_blocks;
+        uint32 cyl_sectors = 1;
+        /* Walk the largest power-of-2 factor of total_blocks, capped at 256
+         * so dg_Cylinders stays large enough to look cylinder-like in tools
+         * that key off it.  For an 8 TiB disk (2^34 blocks) this lands at
+         * cyl_sectors=256, cylinders=2^26.  sii3112 uses 32 -- either works. */
+        while ((t & 1) == 0 && cyl_sectors < 256) {
+            t >>= 1;
+            cyl_sectors <<= 1;
         }
+        uint32 cylinders = (t > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL : (uint32)t;
+        if (cylinders == 0) cylinders = 1;
 
-        uint32 cyl_sectors = heads * sectors_per_track;
-        uint32 total32 = (unit->total_blocks > 0xFFFFFFFFULL)
-                         ? 0xFFFFFFFFUL : (uint32)unit->total_blocks;
-
-        geom->dg_SectorSize = unit->block_size;
-        geom->dg_TotalSectors = total32;
-        geom->dg_Heads = heads;
-        geom->dg_TrackSectors = sectors_per_track;
-        geom->dg_CylSectors = cyl_sectors;
-        geom->dg_Cylinders = cylinders;
+        /* dg_TotalSectors is uint32 in struct DriveGeometry.  When the
+         * underlying disk is >2 TiB the true block count cannot fit, so
+         * we have a choice: wrap (= 0 for an 8 TiB disk: 2^34 mod 2^32 = 0)
+         * or clamp at 0xFFFFFFFF.  Empirically diskboot.kmod (53.11 /
+         * 2014) treats TotalSectors=0 as "size unknown" and skips
+         * the unit entirely, so NO partitions get a DOSNode -- not even
+         * partitions that lie wholly within the 32-bit LBA range.  Clamp
+         * at 0xFFFFFFFF (= "I have at least 2 TiB") so the legacy boot
+         * scan trusts the unit and processes the RDB.  Callers that need
+         * the real >2 TiB count must use NSCMD_TD_GETGEOMETRY64 +
+         * struct DriveGeometry64. */
+        geom->dg_SectorSize   = unit->block_size;
+        geom->dg_TotalSectors = (unit->total_blocks > 0xFFFFFFFFULL)
+                                 ? 0xFFFFFFFFUL
+                                 : (uint32)unit->total_blocks;
+        geom->dg_Cylinders    = cylinders;
+        geom->dg_CylSectors   = cyl_sectors;
+        /* dg_Heads + dg_TrackSectors are decorative on a block-addressed
+         * device; keep them consistent with dg_CylSectors so callers that
+         * cross-check H*TS == CS don't trip.  H=cyl_sectors / TS=1 is the
+         * simplest pair that satisfies this. */
+        geom->dg_Heads        = cyl_sectors;
+        geom->dg_TrackSectors = 1;
         /*
          * dg_BufMemType is used by `diskboot.kmod` (and any caller that
          * wants AmigaOS-allocated buffers / DOSNode/FSSM/DOSEnvVec memory
@@ -100,10 +114,12 @@ void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
         geom->dg_Flags = 0;
 
         DPRINTF(libBase->IExec,
-                "[virtioscsi] TD_GETGEOMETRY: SectorSize=%lu TotalSectors=%lu "
-                "C=%lu H=%lu S=%lu CylSectors=%lu DevType=%lu Flags=%lu\n",
-                geom->dg_SectorSize, geom->dg_TotalSectors, geom->dg_Cylinders, geom->dg_Heads, geom->dg_TrackSectors,
-                geom->dg_CylSectors, (uint32)geom->dg_DeviceType, (uint32)geom->dg_Flags);
+                "[virtioscsi] TD_GETGEOMETRY reply T%lu L%lu: SectorSize=%lu TotalSectors=%lu "
+                "C=%lu CylSectors=%lu H=%lu S=%lu\n",
+                unit->target_id, unit->lun_id,
+                geom->dg_SectorSize, geom->dg_TotalSectors,
+                geom->dg_Cylinders, geom->dg_CylSectors,
+                geom->dg_Heads, geom->dg_TrackSectors);
 
         /* Raw byte dump of the struct we just filled, so we can verify the
          * caller sees exactly these bytes (catches accidental memory clobber). */

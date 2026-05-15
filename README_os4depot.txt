@@ -1,6 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 1.10 - 17 April 2026
+Version 1.11 - 15 May 2026
 
 
 INTRODUCTION
@@ -72,7 +72,12 @@ FEATURES
 - Discovers up to 8 SCSI targets at boot
 - All discovered partitions automount via mounter.library
 - Full trackdisk command set including 64-bit NSD commands
-- >2TB disk support via READ CAPACITY (16)
+- >2 TiB disk support: READ CAPACITY (16) for 64-bit block count, plus
+  a sii3112ide-compatible logical CHS in TD_GETGEOMETRY so partitions
+  on disks larger than 2 TiB get DOSNodes and mount via diskboot.kmod.
+  NSCMD_TD_GETGEOMETRY64 reports the unclamped 64-bit count. (Single
+  partitions remain limited to ~2 TiB by AmigaOS RDB's 32-bit fields --
+  use multiple partitions to span the full disk.)
 - SCSI VPD pages (0x00, 0x80, 0x83) answered locally
 - Accurate SCSI error codes mapped to AmigaOS io_Error values
 - 4K sector support - block size read from device, not hardcoded
@@ -165,6 +170,42 @@ sessions where symbol addresses help decode DSI/grim-reaper reports.
 
 CHANGELOG
 ---------
+
+v1.11 (15.05.2026)
+  - >2 TiB partitions now mount. TD_GETGEOMETRY's dg_TotalSectors
+    (uint32) is clamped at 0xFFFFFFFF instead of letting the cast
+    wrap to 0. diskboot.kmod (2014) was treating TotalSectors=0 as
+    "size unknown" and skipping the whole unit, so no partition --
+    not even partitions within 32-bit LBA range -- ever got a
+    DOSNode. With the clamp, virtioscsi behaves identically to
+    sii3112ide on the same image: diskboot creates DOSNodes for
+    every partition. NSCMD_TD_GETGEOMETRY64 still reports the
+    unclamped 64-bit count for callers that ask.
+  - sii3112-style logical CHS in TD_GETGEOMETRY: dg_Cylinders *
+    dg_CylSectors == total_blocks exactly (largest power-of-2
+    factor up to 256). Eliminates Media's "Total sectors: -NNN"
+    rounding artifact; the reported disk size now matches sii3112
+    bit-for-bit. RDB-declared physical CHS is no longer fed into
+    TD_GETGEOMETRY -- filesystems use PartitionBlock for their LBA
+    math and Media reads RDB directly for its physical-data panel.
+  - Tighter RDB validation in ensure_rdb_geometry_cached: checks
+    rdb_SummedLongs is plausible and verifies the longword checksum.
+    Prevents stray "RDSK" magics in stale start-of-file data being
+    accepted as a valid RDB.
+  - RDB no longer cached across TD_GETGEOMETRY calls: the on-disk
+    RDB can be rewritten by Media at any time, re-read each time so
+    geometry tracks the current state. Capacity (RC10/RC16) is
+    still cached.
+  - Test suite expanded with TESTS 14-17: held-async semantics,
+    NSCMD_TD_GETGEOMETRY64 round-trip, ATA pass-through (CDB 0x85),
+    HD_SCSICMD unsupported-opcode auto-sense. TEST 3 assertion fixed
+    (beyond-EOF NSCMD_TD_READ64 maps to IOERR_NOCMD via SCSI sense
+    decoding -- previously asserted not-IOERR_NOCMD which always
+    failed).
+  - Dormant code removed: src/virtio/virtio_events.c (v1.9 event-queue
+    consumer) and src/virtio/virtio_mounter.c (v1.9 hot-add
+    mounter.library integration), both disabled in v1.10 and never
+    revisited. Recoverable via git log if needed.
 
 v1.10 (17.04.2026)
   - SFS 1.290 compatibility: explicit 68k-compatible jump table

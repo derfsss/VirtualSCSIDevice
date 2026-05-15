@@ -607,6 +607,114 @@ and was deleted along with it.
 - `Makefile` — debug-variant target, LHA layout
 - `tools/qemu-regression/` — new regression + stress harnesses
 
+## v1.11 >2 TiB Partitions, sii3112-compatible Geometry (May 2026)
+
+The headline change: virtio-scsi disks larger than 2 TiB now have their
+partitions mounted by AmigaOS. The chain of fixes:
+
+### `dg_TotalSectors` clamp (the actual fix that made partitions mount)
+
+`struct DriveGeometry` in `<devices/trackdisk.h>` has `dg_TotalSectors` as
+uint32. For an 8 TiB virtio-scsi disk (17,179,869,184 blocks) the cast
+`(uint32)total_blocks` wraps to 0. Empirically, `diskboot.kmod` 53.11
+(2014) treats `TotalSectors=0` as "size unknown / no disk" and skips
+the whole unit, so NO partition on the disk ever gets a DOSNode --
+not even partitions that lie entirely within 32-bit LBA range.
+
+Fix in `cmd_td_getgeometry.c`: clamp at `0xFFFFFFFF` instead of letting
+the cast wrap. The unit then looks like a `>=2 TiB` disk to legacy
+callers; `NSCMD_TD_GETGEOMETRY64` continues to report the full 64-bit
+count via `struct DriveGeometry64` for callers that ask.
+
+Verified directly by swapping the same 8 TiB image between `virtioscsi`
+and a second `sii3112ide` controller (added via `-device sii3112,id=sii1`
+on the QEMU command line). Both drivers now produce identical
+`diskboot.kmod` output: `DH1`, `DH2`, `DH3` DOSNodes created for the
+three partitions on the disk. (Partitions straddling the 32-bit LBA
+boundary or living entirely past it still hit OS-level limits even
+on `sii3112ide` -- that's an SDK era constraint, not a driver issue.)
+
+### sii3112-style logical CHS for `TD_GETGEOMETRY`
+
+The previous RDB-driven CHS (`Surfaces=27 BlocksPerTrack=35
+Cylinders=18179749`) multiplied to 17,179,862,805 blocks -- short by
+6379 blocks of the actual 17,179,869,184. Media's geometry panel
+displayed the rounding artifact as "Total sectors: -6379" and a
+slightly-undersized total disk size (8191.997 GB vs the real 8192 GB).
+
+`sii3112ide.device` avoids this by synthesizing a power-of-2-aligned
+"logical" CHS where `dg_Cylinders * dg_CylSectors == total_blocks`
+exactly. Adopted the same scheme: walk the largest power-of-2 factor
+of `total_blocks` up to 256, use that as `dg_CylSectors`, and set
+`dg_Cylinders = total_blocks / dg_CylSectors`. `dg_Heads` and
+`dg_TrackSectors` are paired (`H = CS, S = 1`) so any caller that
+cross-checks `H * S == CS` is satisfied.
+
+For 8 TiB this lands at `dg_CylSectors = 256, dg_Cylinders = 67108864`
+with `dg_TotalSectors` clamped at `0xFFFFFFFF` -- exact size, clean
+Media display, identical disk size reported by virtioscsi and sii3112.
+
+### Tighter RDB validation
+
+Block-0 RDB header is now rejected if `rdb_SummedLongs` is implausible
+(0 or >128) or if the longword checksum doesn't sum to 0 mod 2^32.
+Previously a stray "RDSK" magic in stale data from an earlier image
+on the same file got accepted as a valid RDB and contaminated the
+reported geometry. The checksum walk follows the standard
+`hardblocks.h` convention.
+
+### Don't cache the RDB across reads
+
+The RDB on disk can change at any time (Media writes a fresh RDB
+during partition edits, HDToolbox rewrites it, a user `dd`s a new
+image over it). Re-read block 0 on every `TD_GETGEOMETRY` so the
+reported geometry tracks the current on-disk state. The capacity
+query (READ CAPACITY 10/16) is still cached -- the underlying device
+size cannot change at runtime, only the partition table on top of it.
+
+### Test-suite additions
+
+Four new in-process tests in `tests/test_virtioscsi.c`:
+
+* **TEST 14 - Held-async semantics** (TD_ADDCHANGEINT replace-prior /
+  TD_REMCHANGEINT retire / non-last-close survives). Closes the gap
+  the v1.10 coverage audit flagged as the highest-risk untested path.
+* **TEST 15 - `NSCMD_TD_GETGEOMETRY64` round-trip**: confirms the
+  64-bit geometry agrees with legacy TD_GETGEOMETRY on <=2 TiB disks
+  and reports the full count past 2 TiB.
+* **TEST 16 - ATA pass-through (CDB 0x85)**: SMART READ DATA returns
+  the synthesised 512-byte block; IDENTIFY DEVICE rejected with
+  CHECK CONDITION.
+* **TEST 17 - HD_SCSICMD unsupported opcode**: auto-sense decoding
+  via SCSIF_AUTOSENSE returns ILLEGAL_REQUEST (0x05) / INVALID OPCODE
+  (0x20).
+
+TEST 3 (5GB-offset NSCMD_TD_READ64) had been the long-standing `[FAIL]`
+result in the suite because it asserted `io_Error != IOERR_NOCMD`, but
+out-of-range LBA gets mapped to `IOERR_NOCMD` via the SCSI sense-key
+path. Assertion fixed to PASS when `io_Error` is 0 OR IOERR_NOCMD.
+
+### Dormant code removed
+
+`src/virtio/virtio_events.c` and `src/virtio/virtio_mounter.c` (v1.9
+event-queue consumer + mounter.library hot-add integration; disabled
+in v1.10 pending unresolved SFS 1.290 interaction) deleted entirely.
+Plus the associated unused fields in `VirtIOSCSIBase`
+(`MounterBase`, `IMounter`, all `event_*`, `events_enabled`) and
+`VirtIOUSCSIDevUnit` (`announced`). Recovering the feature is a
+`git log -- src/virtio/virtio_events.c` away.
+
+### Files Changed
+
+- `src/exec_cmds/cmd_td_getgeometry.c` -- logical CHS synthesis +
+  TotalSectors clamp at 0xFFFFFFFF.
+- `src/scsi_cdb_helpers.c` -- RDB checksum validation, no cross-read
+  caching of RDB CHS.
+- `tests/test_virtioscsi.c` -- TESTS 14-17 plus TEST 3 assertion fix.
+- `include/version.h` -- DEVICE_REVISION 10 -> 11.
+- `README.md`, `HISTORY.md`, `README_os4depot.txt` -- changelog +
+  feature-list updates for >2 TiB support.
+
 ## v1.10 SFS 1.290 Compatibility, SandboxVM, Wider AmigaOS Compatibility (May 2026)
 
 ### SFS 1.290 mount fix

@@ -44,6 +44,11 @@ void Handle_NS_TD_GetGeometry64(struct VirtIOSCSIBase *libBase, struct IOStdReq 
         geom->dg_Flags = 0;      /* Fixed media */
         geom->dg_Reserved2 = 0;
 
+        DPRINTF(libBase->IExec,
+                "[virtioscsi] NSCMD_TD_GETGEOMETRY64 reply T%lu L%lu: SectorSize=%lu TotalSectors=%llu\n",
+                unit->target_id, unit->lun_id,
+                geom->dg_SectorSize, (unsigned long long)geom->dg_TotalSectors);
+
         req->io_Actual = sizeof(struct DriveGeometry64);
         req->io_Error = 0;
     } else {

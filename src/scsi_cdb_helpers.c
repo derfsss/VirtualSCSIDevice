@@ -185,11 +185,24 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
 {
     struct ExecIFace *IExec = base->IExec;
 
-    if (!unit || unit->rdb_geometry_checked)
+    if (!unit)
         return 0;
 
-    /* We need block_size before we can request "one block".  If the caller
-     * hasn't called ensure_geometry_cached yet, do it now. */
+    /* Do NOT cache the RDB read.  The on-disk RDB can change at any time
+     * (Media writes a fresh RDB during partition edits; HDToolbox rewrites
+     * it; a user dd's a new disk image in).  Re-read block 0 on every
+     * TD_GETGEOMETRY so the reported CHS always reflects what's currently
+     * on the disk.  Reset the per-unit RDB state up-front so a stale
+     * earlier probe doesn't leak through if this read fails. */
+    unit->rdb_geometry_valid    = FALSE;
+    unit->rdb_geometry_checked  = FALSE;
+    unit->rdb_phys_cyls         = 0;
+    unit->rdb_phys_sectors      = 0;
+    unit->rdb_phys_heads        = 0;
+
+    /* We need block_size before we can request "one block".  Capacity
+     * (RC10/RC16) is cached because the underlying device size cannot
+     * change at runtime -- only the partition table on top of it does. */
     if (!unit->geometry_valid) {
         int32 rc = ensure_geometry_cached(base, unit);
         if (rc != 0)
@@ -234,6 +247,36 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
         return 0; /* non-fatal */
     }
 
+    /*
+     * Verify the RDSK checksum.  An RDB header's first SummedLongs longwords
+     * (read as big-endian uint32) must sum to zero modulo 2^32 -- this is
+     * the standard hardblocks.h convention.  Without this check, any
+     * stray 4-byte sequence "RDSK" anywhere in a previously-written block
+     * matches.  Bound SummedLongs at 128 (the typical RDB header size of
+     * 512 bytes / 4) so a corrupt field can't drive us off the end of buf.
+     */
+    uint32 summed_longs = ((uint32)buf[0x04] << 24) | ((uint32)buf[0x05] << 16) |
+                          ((uint32)buf[0x06] << 8)  |  (uint32)buf[0x07];
+    if (summed_longs == 0 || summed_longs > 128) {
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: implausible SummedLongs=%lu -- ignoring\n",
+                summed_longs);
+        IExec->FreeVec(buf);
+        return 0;
+    }
+    uint32 cksum = 0;
+    for (uint32 i = 0; i < summed_longs; i++) {
+        uint32 lw = ((uint32)buf[i*4 + 0] << 24) | ((uint32)buf[i*4 + 1] << 16) |
+                    ((uint32)buf[i*4 + 2] << 8)  |  (uint32)buf[i*4 + 3];
+        cksum += lw;
+    }
+    if (cksum != 0) {
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: checksum FAILED "
+                "(SummedLongs=%lu, sum=0x%08lX) -- stale header, ignoring\n",
+                summed_longs, cksum);
+        IExec->FreeVec(buf);
+        return 0;
+    }
+
     /* Extract the physical CHS (big-endian uint32s at offsets 0x40/0x44/0x48). */
     uint32 cyls    = ((uint32)buf[0x40] << 24) | ((uint32)buf[0x41] << 16) |
                      ((uint32)buf[0x42] << 8)  |  (uint32)buf[0x43];
@@ -245,8 +288,8 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
     /* Sanity: values must be non-zero and factor into something <= total_blocks. */
     if (cyls == 0 || sectors == 0 || heads == 0 ||
         ((uint64)cyls * sectors * heads) > unit->total_blocks) {
-        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: implausible CHS %lu/%lu/%lu (total %llu) - ignoring\n",
-                cyls, sectors, heads, (unsigned long long)unit->total_blocks);
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: implausible CHS %lu/%lu/%lu - ignoring\n",
+                cyls, sectors, heads);
         IExec->FreeVec(buf);
         return 0;
     }
@@ -256,8 +299,8 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
     unit->rdb_phys_heads     = heads;
     unit->rdb_geometry_valid = TRUE;
 
-    DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB header CHS: C=%lu H=%lu S=%lu (= %lu blocks)\n",
-            cyls, heads, sectors, cyls * heads * sectors);
+    DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB header CHS: C=%lu H=%lu S=%lu\n",
+            cyls, heads, sectors);
 
     /*
      * Now also follow the PartitionList and read the FIRST partition's
