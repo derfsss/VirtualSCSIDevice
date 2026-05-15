@@ -111,6 +111,90 @@ static BOOL prepare_dma(struct ExecIFace *IExec, struct DMABuffer *db, APTR addr
 }
 
 /*
+ * complete_inflight_slot: shared completion path for one pipelined slot.
+ *
+ * Called from three sites that previously duplicated this sequence:
+ *   1. VirtIOSCSI_DoIO inline-harvest of cross-unit cookies during its drain loop
+ *   2. VirtIOSCSI_Harvest cross-unit branch (owner != NULL)
+ *   3. VirtIOSCSI_Harvest this-unit branch
+ *
+ * The caller has already identified the owning unit and slot. This helper:
+ *   - maps the VirtIO response + SCSI status to io_Error
+ *   - computes io_Actual from length and residual
+ *   - performs bounce read-back (CacheClearE + CopyMem) for read completions
+ *     that took the bounce path
+ *   - releases any per-slot StartDMA mapping (direct path only)
+ *   - returns the slot to the unit's free list
+ *   - decrements libBase->occupied_count and target->inflight_count, and
+ *     clears the unit's bit in libBase->active_units_mask when the unit
+ *     drains
+ *   - ReplyMsg's the ioreq
+ *
+ * io_lock contract: caller must NOT hold io_lock. ReplyMsg can reschedule,
+ * and we mutate libBase counters without taking the lock here (the same
+ * pattern the original duplicated sites used). The counters are only
+ * mutated from Harvest/DoIO paths which are themselves serialised by
+ * io_lock around GetBuf, so by the time we reach this helper the lock
+ * is released and the per-slot data is owned by this code path alone.
+ */
+static void complete_inflight_slot(struct ExecIFace *IExec,
+                                   struct VirtIOSCSIBase *libBase,
+                                   struct VirtIOUSCSIDevUnit *target,
+                                   int32 slot)
+{
+    struct IOStdReq *ioreq = target->inflight[slot].ioreq;
+    struct virtio_scsi_resp_cmd *resp_cmd = target->resp_bufs[slot];
+
+    ioreq->io_Error = map_scsi_error(resp_cmd->response, resp_cmd->status,
+                                     resp_cmd->sense[2] & 0x0F);
+    if (ioreq->io_Error != 0) {
+        DPRINTF(IExec,
+                "[virtioscsi:virtio_scsi_io.c] complete: T%lu slot=%ld resp=0x%02X scsi=0x%02X err=%ld\n",
+                (uint32)target->target_id, (long)slot,
+                (uint32)resp_cmd->response, (uint32)resp_cmd->status, (long)ioreq->io_Error);
+        ioreq->io_Actual = 0;
+    } else {
+        ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
+    }
+
+    /* Bounce read-back: invalidate stale cache lines and copy device data
+     * into the user buffer. Only relevant for read completions that took
+     * the bounce path. */
+    if (target->inflight[slot].using_bounce && !target->inflight[slot].is_write
+            && ioreq->io_Error == 0 && ioreq->io_Actual > 0) {
+        IExec->CacheClearE(target->bounce_bufs[slot], ioreq->io_Actual, CACRF_InvalidateD);
+        IExec->CopyMem(target->bounce_bufs[slot], target->inflight[slot].dma_addr, ioreq->io_Actual);
+    }
+
+    /* Release the per-slot user-data StartDMA mapping. dma_list points into
+     * data_dma_pool[] so we do NOT FreeSysObject -- just EndDMA. The bounce
+     * path leaves dma_list NULL and skips this entirely. */
+    if (target->inflight[slot].dma_list) {
+        IExec->EndDMA(target->inflight[slot].dma_addr, target->inflight[slot].dma_size,
+                      target->inflight[slot].dma_flags);
+        target->inflight[slot].dma_list        = NULL;
+        target->inflight[slot].dma_num_entries = 0;
+    }
+
+    /* Return slot to the unit's free list. */
+    target->inflight[slot].ioreq  = NULL;
+    target->inflight[slot].cookie = NULL;
+    target->inflight_next[slot] = target->free_head;
+    target->free_head = slot;
+
+    /* Decrement counters and clear the unit's active-units bit when drained. */
+    if (libBase->occupied_count > 0)
+        libBase->occupied_count--;
+    if (target->inflight_count > 0) {
+        target->inflight_count--;
+        if (target->inflight_count == 0)
+            libBase->active_units_mask &= ~(uint8)(1U << target->unit_num);
+    }
+
+    IExec->ReplyMsg((struct Message *)ioreq);
+}
+
+/*
  * VirtIOSCSI_DoIO: Execute a SCSI command through VirtIO Queue 2 (requestq).
  *
  * When unit != NULL and interrupts are installed, the calling task sleeps
@@ -415,42 +499,9 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                             }
                         }
                         if (owner != NULL) {
-                            struct IOStdReq *completed_req = owner->inflight[fslot].ioreq;
-                            struct virtio_scsi_resp_cmd *resp = owner->resp_bufs[fslot];
-                            completed_req->io_Error = map_scsi_error(resp->response, resp->status,
-                                                                     resp->sense[2] & 0x0F);
-                            if (completed_req->io_Error != 0) {
-                                completed_req->io_Actual = 0;
-                            } else {
-                                completed_req->io_Actual = completed_req->io_Length - resp->residual;
-                            }
-                            /* Bounce read-back for inline-harvested cross-unit reads: invalidate + copy */
-                            if (owner->inflight[fslot].using_bounce && !owner->inflight[fslot].is_write
-                                    && completed_req->io_Error == 0 && completed_req->io_Actual > 0) {
-                                IExec->CacheClearE(owner->bounce_bufs[fslot], completed_req->io_Actual, CACRF_InvalidateD);
-                                IExec->CopyMem(owner->bounce_bufs[fslot], owner->inflight[fslot].dma_addr,
-                                               completed_req->io_Actual);
-                            }
-                            if (owner->inflight[fslot].dma_list) {
-                                IExec->EndDMA(owner->inflight[fslot].dma_addr, owner->inflight[fslot].dma_size,
-                                              owner->inflight[fslot].dma_flags);
-                                owner->inflight[fslot].dma_list        = NULL;
-                                owner->inflight[fslot].dma_num_entries = 0;
-                            }
-                            owner->inflight[fslot].ioreq  = NULL;
-                            owner->inflight[fslot].cookie = NULL;
-                            owner->inflight_next[fslot] = owner->free_head;
-                            owner->free_head = fslot;
-                            if (libBase->occupied_count > 0)
-                                libBase->occupied_count--;
-                            if (owner->inflight_count > 0) {
-                                owner->inflight_count--;
-                                if (owner->inflight_count == 0)
-                                    libBase->active_units_mask &= ~(uint8)(1 << owner->unit_num);
-                            }
-                            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: inline-harvest T%lu slot %ld err=%d\n",
-                                    (uint32)owner->target_id, (long)fslot, (int)completed_req->io_Error);
-                            IExec->ReplyMsg((struct Message *)completed_req);
+                            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: inline-harvest T%lu slot %ld\n",
+                                    (uint32)owner->target_id, (long)fslot);
+                            complete_inflight_slot(IExec, libBase, owner, fslot);
                         } else {
                             /*
                              * Not a pipeline cookie — may be another unit's DoIO cookie.
@@ -963,104 +1014,11 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
             continue;
         }
 
-        if (owner != NULL) {
-            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: cross-unit cookie %p -> unit T%lu slot %ld\n",
-                    cookie, (uint32)owner->target_id, (long)slot);
-            {
-                struct IOStdReq *ioreq = owner->inflight[slot].ioreq;
-                struct virtio_scsi_resp_cmd *resp_cmd = owner->resp_bufs[slot];
-
-                ioreq->io_Error = map_scsi_error(resp_cmd->response, resp_cmd->status,
-                                                     resp_cmd->sense[2] & 0x0F);
-                if (ioreq->io_Error != 0) {
-                    DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: cross-unit slot=%ld resp=0x%02X scsi_status=0x%02X err=%ld\n",
-                            (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status, (long)ioreq->io_Error);
-                    ioreq->io_Actual = 0;
-                } else {
-                    ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
-                }
-
-                /* Bounce read-back for cross-unit reads: invalidate + copy */
-                if (owner->inflight[slot].using_bounce && !owner->inflight[slot].is_write
-                        && ioreq->io_Error == 0 && ioreq->io_Actual > 0) {
-                    IExec->CacheClearE(owner->bounce_bufs[slot], ioreq->io_Actual, CACRF_InvalidateD);
-                    IExec->CopyMem(owner->bounce_bufs[slot], owner->inflight[slot].dma_addr, ioreq->io_Actual);
-                }
-
-                /* Clean up per-slot user-data DMA (bounce path: dma_list is NULL, nothing to do).
-                 * dma_list points into data_dma_pool — do NOT FreeSysObject, just EndDMA. */
-                if (owner->inflight[slot].dma_list) {
-                    IExec->EndDMA(owner->inflight[slot].dma_addr, owner->inflight[slot].dma_size,
-                                  owner->inflight[slot].dma_flags);
-                    owner->inflight[slot].dma_list        = NULL;
-                    owner->inflight[slot].dma_num_entries = 0;
-                }
-
-                owner->inflight[slot].ioreq  = NULL;
-                owner->inflight[slot].cookie = NULL;
-                owner->inflight_next[slot] = owner->free_head;
-                owner->free_head = slot;
-                if (libBase->occupied_count > 0)
-                    libBase->occupied_count--;
-                if (owner->inflight_count > 0) {
-                    owner->inflight_count--;
-                    if (owner->inflight_count == 0)
-                        libBase->active_units_mask &= ~(uint8)(1 << owner->unit_num);
-                }
-
-                DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: cross-unit slot=%ld replied err=%d actual=%lu\n",
-                        (long)slot, (int)ioreq->io_Error, ioreq->io_Actual);
-
-                IExec->ReplyMsg((struct Message *)ioreq);
-            }
-        } else {
-            struct IOStdReq *ioreq = unit->inflight[slot].ioreq;
-            struct virtio_scsi_resp_cmd *resp_cmd = unit->resp_bufs[slot];
-
-            /* Decode result using sense key for accurate io_Error */
-            ioreq->io_Error = map_scsi_error(resp_cmd->response, resp_cmd->status,
-                                             resp_cmd->sense[2] & 0x0F);
-            if (ioreq->io_Error != 0) {
-                DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: slot=%ld resp=0x%02X scsi_status=0x%02X err=%ld\n",
-                        (long)slot, (uint32)resp_cmd->response, (uint32)resp_cmd->status, (long)ioreq->io_Error);
-                ioreq->io_Actual = 0;
-            } else {
-                ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
-            }
-
-            /* Bounce read-back: invalidate stale cache, then copy device data → user buf */
-            if (unit->inflight[slot].using_bounce && !unit->inflight[slot].is_write
-                    && ioreq->io_Error == 0 && ioreq->io_Actual > 0) {
-                IExec->CacheClearE(unit->bounce_bufs[slot], ioreq->io_Actual, CACRF_InvalidateD);
-                IExec->CopyMem(unit->bounce_bufs[slot], unit->inflight[slot].dma_addr, ioreq->io_Actual);
-            }
-
-            /* Clean up per-slot user-data DMA (bounce path: dma_list is NULL, nothing to do).
-             * dma_list points into data_dma_pool — do NOT FreeSysObject, just EndDMA. */
-            if (unit->inflight[slot].dma_list) {
-                IExec->EndDMA(unit->inflight[slot].dma_addr, unit->inflight[slot].dma_size,
-                              unit->inflight[slot].dma_flags);
-                unit->inflight[slot].dma_list        = NULL;
-                unit->inflight[slot].dma_num_entries = 0;
-            }
-
-            /* Clear the slot and return to free list */
-            unit->inflight[slot].ioreq  = NULL;
-            unit->inflight[slot].cookie = NULL;
-            unit->inflight_next[slot] = unit->free_head;
-            unit->free_head = slot;
-            if (libBase->occupied_count > 0)
-                libBase->occupied_count--;
-            if (unit->inflight_count > 0) {
-                unit->inflight_count--;
-                if (unit->inflight_count == 0)
-                    libBase->active_units_mask &= ~(uint8)(1 << unit->unit_num);
-            }
-
-            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: slot=%ld replied err=%d actual=%lu\n",
-                    (long)slot, (int)ioreq->io_Error, ioreq->io_Actual);
-
-            IExec->ReplyMsg((struct Message *)ioreq);
+        {
+            struct VirtIOUSCSIDevUnit *target = owner ? owner : unit;
+            DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: %scookie %p -> T%lu slot %ld\n",
+                    owner ? "cross-unit " : "", cookie, (uint32)target->target_id, (long)slot);
+            complete_inflight_slot(IExec, libBase, target, slot);
         }
 
         IExec->ObtainSemaphore(&libBase->io_lock); /* re-acquire for next GetBuf */
