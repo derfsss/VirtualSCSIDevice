@@ -230,40 +230,55 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
             IExec->ReplyMsg((struct Message *)ioreq);
             return;
         }
-        /* DEBUG: For CMD_WRITE / TD_WRITE64 / ETD_WRITE / NSCMD_TD_WRITE64,
-         * dump the first 128 bytes of the buffer the caller wants to write.
-         * This is what diskboot.kmod / MediaToolbox / SFS-format will write
-         * during partition setup so we can verify exactly what the disk
-         * receives — and tell apart RDB / PartitionBlock / FSHD / SFS root
-         * blocks by their 4-byte signatures. */
+#ifdef DEBUG
+        /* For CMD_WRITE / TD_WRITE64 / ETD_WRITE / NSCMD_TD_WRITE64, dump the
+         * first 128 bytes of the buffer the caller wants to write -- useful
+         * to verify exactly what the disk receives during partition setup
+         * and to tell apart RDB / PartitionBlock / FSHD / SFS root blocks
+         * by their 4-byte signatures.
+         *
+         * The whole block is wrapped in #ifdef DEBUG so the signature
+         * detection and dump loop don't run in release builds (the DPRINTF
+         * macro alone would silence the output but not the surrounding
+         * computation). The inner dump rows are also bounded by io_Length
+         * to avoid reading 0..15 bytes past the end of a short buffer. */
         if ((ioreq->io_Command == CMD_WRITE || ioreq->io_Command == TD_WRITE64 ||
              ioreq->io_Command == NSCMD_TD_WRITE64 || ioreq->io_Command == ETD_WRITE) &&
             ioreq->io_Data && ioreq->io_Length > 0) {
-            uint8 *b = (uint8 *)ioreq->io_Data;
-            uint32 dump_len = ioreq->io_Length < 128 ? ioreq->io_Length : 128;
-            char sig[5] = {0};
-            sig[0] = b[0]; sig[1] = b[1]; sig[2] = b[2]; sig[3] = b[3];
+            const uint8 *b = (const uint8 *)ioreq->io_Data;
+            uint32 dump_len = ioreq->io_Length < 128 ? (uint32)ioreq->io_Length : 128;
+            uint8 s0 = dump_len >= 1 ? b[0] : 0;
+            uint8 s1 = dump_len >= 2 ? b[1] : 0;
+            uint8 s2 = dump_len >= 3 ? b[2] : 0;
+            uint8 s3 = dump_len >= 4 ? b[3] : 0;
             const char *sigtype = "unknown";
-            if (sig[0] == 'R' && sig[1] == 'D' && sig[2] == 'S' && sig[3] == 'K') sigtype = "RDSK (RDB header)";
-            else if (sig[0] == 'P' && sig[1] == 'A' && sig[2] == 'R' && sig[3] == 'T') sigtype = "PART (PartitionBlock)";
-            else if (sig[0] == 'F' && sig[1] == 'S' && sig[2] == 'H' && sig[3] == 'D') sigtype = "FSHD (FileSysHeader)";
-            else if (sig[0] == 'L' && sig[1] == 'S' && sig[2] == 'E' && sig[3] == 'G') sigtype = "LSEG (LoadSeg block)";
-            else if (sig[0] == 'B' && sig[1] == 'A' && sig[2] == 'D' && sig[3] == 'B') sigtype = "BADB (BadBlock list)";
-            else if (sig[0] == 'S' && sig[1] == 'F' && sig[2] == 'S' && sig[3] == 0) sigtype = "SFS root/superblock";
-            DPRINTF(IExec,
+            if (s0 == 'R' && s1 == 'D' && s2 == 'S' && s3 == 'K') sigtype = "RDSK (RDB header)";
+            else if (s0 == 'P' && s1 == 'A' && s2 == 'R' && s3 == 'T') sigtype = "PART (PartitionBlock)";
+            else if (s0 == 'F' && s1 == 'S' && s2 == 'H' && s3 == 'D') sigtype = "FSHD (FileSysHeader)";
+            else if (s0 == 'L' && s1 == 'S' && s2 == 'E' && s3 == 'G') sigtype = "LSEG (LoadSeg block)";
+            else if (s0 == 'B' && s1 == 'A' && s2 == 'D' && s3 == 'B') sigtype = "BADB (BadBlock list)";
+            else if (s0 == 'S' && s1 == 'F' && s2 == 'S' && s3 == 0)   sigtype = "SFS root/superblock";
+            IExec->DebugPrintF(
                     "[virtioscsi:BeginIO.c] WRITE T%lu L%lu off=0x%llx len=%lu first4=%02x%02x%02x%02x (%s)\n",
                     unit->target_id, unit->lun_id,
                     (unsigned long long)ioreq->io_Offset, (uint32)ioreq->io_Length,
-                    b[0], b[1], b[2], b[3], sigtype);
+                    s0, s1, s2, s3, sigtype);
             for (uint32 r = 0; r < dump_len; r += 16) {
-                DPRINTF(IExec, "  +0x%03lx: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+                /* Only read bytes that actually fit inside dump_len; pad
+                 * unread positions with 0 so the 16-byte row format stays
+                 * readable. Bounded read prevents 0..15 bytes of OOB. */
+                uint8 row[16] = {0};
+                uint32 take = (dump_len - r < 16) ? (dump_len - r) : 16;
+                for (uint32 i = 0; i < take; i++) row[i] = b[r + i];
+                IExec->DebugPrintF("  +0x%03lx: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
                         r,
-                        b[r+ 0], b[r+ 1], b[r+ 2], b[r+ 3],
-                        b[r+ 4], b[r+ 5], b[r+ 6], b[r+ 7],
-                        b[r+ 8], b[r+ 9], b[r+10], b[r+11],
-                        b[r+12], b[r+13], b[r+14], b[r+15]);
+                        row[ 0], row[ 1], row[ 2], row[ 3],
+                        row[ 4], row[ 5], row[ 6], row[ 7],
+                        row[ 8], row[ 9], row[10], row[11],
+                        row[12], row[13], row[14], row[15]);
             }
         }
+#endif /* DEBUG */
         /* Clear IOF_QUICK: caller must not touch ioreq until ReplyMsg */
         ioreq->io_Flags &= ~IOF_QUICK;
         DPRINTF(IExec, "[virtioscsi:BeginIO.c] Queuing cmd %lu to unit task port\n", (uint32)ioreq->io_Command);

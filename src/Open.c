@@ -9,27 +9,33 @@ struct VirtIOSCSIBase *_manager_Open(struct DeviceManagerInterface *Self, struct
     struct VirtIOSCSIBase *devBase = (struct VirtIOSCSIBase *)Self->Data.LibBase;
     struct VirtIOUSCSIDevUnit *unit;
 
+    (void)flags; /* only consumed by the DEBUG dump block below */
+
     devBase->dev_Base.dd_Library.lib_OpenCnt++;
 
-    struct Task *caller = devBase->IExec->FindTask(NULL);
-    const char *callerName = (caller && caller->tc_Node.ln_Name) ? caller->tc_Node.ln_Name : "?";
-    struct MsgPort *rp = ioreq->io_Message.mn_ReplyPort;
-    /* Dump all 48 bytes of the ioreq so we see every byte SFS (or any caller)
-     * has set, including fields we haven't interpreted. */
-    uint8 *ib = (uint8 *)ioreq;
-    DPRINTF(devBase->IExec,
-            "[virtioscsi:Open.c] Open unit %lu flags=%lu by '%s' ioreq=%p rp=%p (sigBit=%d sigTask=%p)\n"
-            "  raw: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
-            "       %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
-            "       %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
-            unitNum, flags, callerName, ioreq,
-            rp, rp ? (int)rp->mp_SigBit : -1, rp ? (void *)rp->mp_SigTask : NULL,
-            ib[ 0], ib[ 1], ib[ 2], ib[ 3], ib[ 4], ib[ 5], ib[ 6], ib[ 7],
-            ib[ 8], ib[ 9], ib[10], ib[11], ib[12], ib[13], ib[14], ib[15],
-            ib[16], ib[17], ib[18], ib[19], ib[20], ib[21], ib[22], ib[23],
-            ib[24], ib[25], ib[26], ib[27], ib[28], ib[29], ib[30], ib[31],
-            ib[32], ib[33], ib[34], ib[35], ib[36], ib[37], ib[38], ib[39],
-            ib[40], ib[41], ib[42], ib[43], ib[44], ib[45], ib[46], ib[47]);
+#ifdef DEBUG
+    {
+        struct Task *caller = devBase->IExec->FindTask(NULL);
+        const char *callerName = (caller && caller->tc_Node.ln_Name) ? caller->tc_Node.ln_Name : "?";
+        struct MsgPort *rp = ioreq->io_Message.mn_ReplyPort;
+        /* Dump all 48 bytes of the ioreq so we see every byte SFS (or any caller)
+         * has set, including fields we haven't interpreted. */
+        const uint8 *ib = (const uint8 *)ioreq;
+        devBase->IExec->DebugPrintF(
+                "[virtioscsi:Open.c] Open unit %lu flags=%lu by '%s' ioreq=%p rp=%p (sigBit=%d sigTask=%p)\n"
+                "  raw: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
+                "       %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
+                "       %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+                unitNum, flags, callerName, ioreq,
+                rp, rp ? (int)rp->mp_SigBit : -1, rp ? (void *)rp->mp_SigTask : NULL,
+                ib[ 0], ib[ 1], ib[ 2], ib[ 3], ib[ 4], ib[ 5], ib[ 6], ib[ 7],
+                ib[ 8], ib[ 9], ib[10], ib[11], ib[12], ib[13], ib[14], ib[15],
+                ib[16], ib[17], ib[18], ib[19], ib[20], ib[21], ib[22], ib[23],
+                ib[24], ib[25], ib[26], ib[27], ib[28], ib[29], ib[30], ib[31],
+                ib[32], ib[33], ib[34], ib[35], ib[36], ib[37], ib[38], ib[39],
+                ib[40], ib[41], ib[42], ib[43], ib[44], ib[45], ib[46], ib[47]);
+    }
+#endif /* DEBUG */
 
     if (unitNum > 7) {
         ioreq->io_Error = IOERR_OPENFAIL;
@@ -62,15 +68,16 @@ struct VirtIOSCSIBase *_manager_Open(struct DeviceManagerInterface *Self, struct
 
     devBase->dev_Base.dd_Library.lib_Flags &= ~LIBF_DELEXP;
 
+#ifdef DEBUG
     /* Dump the first 64 bytes of our libBase and of the unit struct as SFS
      * (or any caller) would see them by dereferencing io_Device / io_Unit.
      * If SFS is rejecting us based on some field, it has to be one of
      * these bytes. */
     {
-        uint8 *lb = (uint8 *)devBase;
-        uint8 *ub = (uint8 *)unit;
-        struct Library *lib = &devBase->dev_Base.dd_Library;
-        DPRINTF(devBase->IExec,
+        const uint8 *lb = (const uint8 *)devBase;
+        const uint8 *ub = (const uint8 *)unit;
+        const struct Library *lib = &devBase->dev_Base.dd_Library;
+        devBase->IExec->DebugPrintF(
                 "  libBase=%p lib_Version=%u lib_Revision=%u lib_OpenCnt=%u lib_Flags=0x%02x lib_Sum=0x%08lx lib_NegSize=%u lib_PosSize=%u\n"
                 "    ln_Type=%d ln_Pri=%d ln_Name='%s'\n"
                 "    raw[0..63]:\n"
@@ -90,7 +97,7 @@ struct VirtIOSCSIBase *_manager_Open(struct DeviceManagerInterface *Self, struct
                 lb[40], lb[41], lb[42], lb[43], lb[44], lb[45], lb[46], lb[47],
                 lb[48], lb[49], lb[50], lb[51], lb[52], lb[53], lb[54], lb[55],
                 lb[56], lb[57], lb[58], lb[59], lb[60], lb[61], lb[62], lb[63]);
-        DPRINTF(devBase->IExec,
+        devBase->IExec->DebugPrintF(
                 "  unit=%p unit_flags=0x%02x unit_OpenCnt=%u\n"
                 "    raw[0..63]:\n"
                 "    %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
@@ -107,6 +114,7 @@ struct VirtIOSCSIBase *_manager_Open(struct DeviceManagerInterface *Self, struct
                 ub[48], ub[49], ub[50], ub[51], ub[52], ub[53], ub[54], ub[55],
                 ub[56], ub[57], ub[58], ub[59], ub[60], ub[61], ub[62], ub[63]);
     }
+#endif /* DEBUG */
 
 bailout:
     if (ioreq->io_Error != 0) {

@@ -118,24 +118,25 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
 
     DPRINTF(iexec, "[virtioscsi:Init.c] Init: Device library initialized and public.\n");
 
+#ifdef DEBUG
     /* Struct-layout diagnostic: print the sizes and offsets so we can
      * correlate raw hex dumps with the SDK's struct Unit / MsgPort layout.
      * Required because the post-DOS hang debugging needs us to know the
      * exact byte positions of unit_flags and unit_OpenCnt. */
-    DPRINTF(iexec,
+    iexec->DebugPrintF(
             "[virtioscsi:Init.c] layout: sizeof(Library)=%u Node=%u MsgPort=%u Unit=%u DevUnit=%u\n",
             (uint32)sizeof(struct Library),
             (uint32)sizeof(struct Node),
             (uint32)sizeof(struct MsgPort),
             (uint32)sizeof(struct Unit),
             (uint32)sizeof(struct VirtIOUSCSIDevUnit));
-    DPRINTF(iexec,
+    iexec->DebugPrintF(
             "  Unit offsets: MsgPort=%u flags=%u pad=%u OpenCnt=%u (first byte of ln_Type at off 8 of Unit)\n",
             (uint32)__builtin_offsetof(struct Unit, unit_MsgPort),
             (uint32)__builtin_offsetof(struct Unit, unit_flags),
             (uint32)__builtin_offsetof(struct Unit, unit_pad),
             (uint32)__builtin_offsetof(struct Unit, unit_OpenCnt));
-    DPRINTF(iexec,
+    iexec->DebugPrintF(
             "  MsgPort offsets: mp_Flags=%u mp_SigBit=%u mp_SigTask=%u mp_MsgList=%u\n",
             (uint32)__builtin_offsetof(struct MsgPort, mp_Flags),
             (uint32)__builtin_offsetof(struct MsgPort, mp_SigBit),
@@ -147,8 +148,8 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
      * filesystem handlers call device methods via jsr -6/-12/-18/-24/-30/-36
      * from libBase; a zero-filled neg area means jsr -30(a6) lands in NULL. */
     {
-        uint8 *neg = (uint8 *)devBase - 48; /* 48 bytes below libBase */
-        DPRINTF(iexec,
+        const uint8 *neg = (const uint8 *)devBase - 48; /* 48 bytes below libBase */
+        iexec->DebugPrintF(
                 "  neg-table (libBase-48 .. libBase-1, 48 bytes):\n"
                 "    %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
                 "    %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n"
@@ -160,6 +161,7 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
                 neg[32], neg[33], neg[34], neg[35], neg[36], neg[37], neg[38], neg[39],
                 neg[40], neg[41], neg[42], neg[43], neg[44], neg[45], neg[46], neg[47]);
     }
+#endif /* DEBUG */
 
     return (struct Library *)devBase;
 }

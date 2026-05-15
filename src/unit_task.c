@@ -774,8 +774,9 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
 
     /* For synchronous commands (not submitted asynchronously), reply now */
     if (!submitted) {
+#ifdef DEBUG
         struct MsgPort *rp = ioreq->io_Message.mn_ReplyPort;
-        DPRINTF(IExec,
+        IExec->DebugPrintF(
                 "[virtioscsi:unit_task.c] ReplyMsg: ioreq=%p cmd=%lu err=%ld actual=%lu port=%p\n"
                 "  port pre-reply: mp_Flags=0x%02x mp_SigBit=%d mp_SigTask=%p lh_Head=%p lh_TailPred=%p\n",
                 ioreq, (uint32)ioreq->io_Command, (long)(int8)ioreq->io_Error,
@@ -785,11 +786,13 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                 rp ? (void *)rp->mp_SigTask : NULL,
                 rp ? (void *)rp->mp_MsgList.lh_Head : NULL,
                 rp ? (void *)rp->mp_MsgList.lh_TailPred : NULL);
+#endif /* DEBUG */
         IExec->ReplyMsg((struct Message *)ioreq);
+#ifdef DEBUG
         /* Re-read after: if the reply landed, lh_Head should point to our
          * ioreq (as the first queued reply), OR if the receiver was very
          * fast, the port is empty and lh_Head == &lh_Tail (self-ref sentinel). */
-        DPRINTF(IExec,
+        IExec->DebugPrintF(
                 "  port post-reply: lh_Head=%p lh_TailPred=%p  (ioreq in list? Succ=%p Pred=%p)\n",
                 rp ? (void *)rp->mp_MsgList.lh_Head : NULL,
                 rp ? (void *)rp->mp_MsgList.lh_TailPred : NULL,
@@ -802,7 +805,7 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
          * our signal or stuck elsewhere. */
         struct Task *tgt = rp ? rp->mp_SigTask : NULL;
         if (tgt) {
-            DPRINTF(IExec,
+            IExec->DebugPrintF(
                     "  target task %p '%s': tc_State=%d tc_SigRecvd=0x%08lx tc_SigWait=0x%08lx tc_SigAlloc=0x%08lx\n",
                     tgt,
                     tgt->tc_Node.ln_Name ? tgt->tc_Node.ln_Name : "?",
@@ -811,6 +814,7 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                     (uint32)tgt->tc_SigWait,
                     (uint32)tgt->tc_SigAlloc);
         }
+#endif /* DEBUG */
     }
 
     return submitted; /* TRUE = AddBuf done, caller must VirtIOSCSI_Kick() */
