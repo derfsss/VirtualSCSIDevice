@@ -1,5 +1,6 @@
 #include "scsi_cdb_helpers.h"
 #include "virtioscsi.h"
+#include "sandboxvm_tags.h"
 #include "virtio/virtio_scsi_io.h"
 
 void make_read_capacity16_cdb(uint8 *cdb)
@@ -199,7 +200,8 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
 
     /* DMA-friendly buffer for the block-0 read. */
     uint8 *buf = IExec->AllocVecTags(bs, AVT_Type, MEMF_SHARED,
-                                     AVT_ClearWithValue, 0, TAG_END);
+                                     AVT_ClearWithValue, 0,
+                                     SBV_AVT_HostDMA, 0, TAG_END);
     if (!buf) {
         DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: AllocVec failed\n");
         unit->rdb_geometry_checked = TRUE;
@@ -282,7 +284,8 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
                         ((uint32)buf[0x1E] << 8)  |  (uint32)buf[0x1F];
     if (part_block != 0xFFFFFFFFU && part_block > 0 && part_block < unit->total_blocks) {
         uint8 *pbuf = IExec->AllocVecTags(bs, AVT_Type, MEMF_SHARED,
-                                          AVT_ClearWithValue, 0, TAG_END);
+                                          AVT_ClearWithValue, 0,
+                                          SBV_AVT_HostDMA, 0, TAG_END);
         if (pbuf) {
             uint8 cdb2[10];
             make_read10_cdb(cdb2, part_block, 1);

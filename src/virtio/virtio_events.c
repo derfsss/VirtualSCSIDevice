@@ -5,18 +5,10 @@
 #include "virtio/virtqueue.h"
 #include "unit_discovery.h"
 #include "virtioscsi.h"
+#include "sandboxvm_tags.h"
 #include <exec/exectags.h>
 #include <exec/memory.h>
 #include <exec/tasks.h>
-
-/* SandboxVM-private AllocVecTags tag -- see comment in virtqueue.c.
- * Routes DMA buffers through the SandboxVM host's real allocator so
- * StartDMA/GetDMAList accept them. Unknown tag value on native AOS4
- * (silently ignored by the utility.library tag walker). Must stay
- * in sync with SandboxVM/VM-OS4/include/sbvm_tags.h. */
-#ifndef SBV_AVT_HostDMA
-#define SBV_AVT_HostDMA        (0x80535601u)
-#endif
 
 /*
  * Phase 9: VirtIO SCSI event queue handling.
@@ -141,7 +133,8 @@ static BOOL probe_and_add(struct VirtIOSCSIBase *libBase, uint32 target, uint32 
         return FALSE;
     }
 
-    uint8 *inq = IExec->AllocVecTags(36, AVT_Type, MEMF_SHARED, AVT_ClearWithValue, 0, TAG_END);
+    uint8 *inq = IExec->AllocVecTags(36, AVT_Type, MEMF_SHARED, AVT_ClearWithValue, 0,
+                                     SBV_AVT_HostDMA, 0, TAG_END);
     if (!inq)
         return FALSE;
 
@@ -463,8 +456,11 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
         return FALSE;
     }
 
-    /* DMA-map the pool and cache the physical base */
-    uint32 entries = IExec->StartDMA(libBase->event_pool, libBase->event_pool_size, DMA_ReadFromRAM);
+    /* DMA-map the pool and cache the physical base. The event pool is
+     * device-WRITTEN (device drops events into our buffers), so the
+     * StartDMA/GetDMAList/EndDMA flag must be 0 ("from device to RAM"),
+     * NOT DMA_ReadFromRAM (which means "from RAM to device"). */
+    uint32 entries = IExec->StartDMA(libBase->event_pool, libBase->event_pool_size, 0);
     if (entries == 0) {
         IExec->FreeVec(libBase->event_pool);
         libBase->event_pool = NULL;
@@ -474,13 +470,13 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
     struct DMAEntry *dma_list = (struct DMAEntry *)IExec->AllocSysObjectTags(
         ASOT_DMAENTRY, ASODMAE_NumEntries, entries, TAG_DONE);
     if (!dma_list) {
-        IExec->EndDMA(libBase->event_pool, libBase->event_pool_size, DMA_ReadFromRAM | DMAF_NoModify);
+        IExec->EndDMA(libBase->event_pool, libBase->event_pool_size, DMAF_NoModify);
         IExec->FreeVec(libBase->event_pool);
         libBase->event_pool = NULL;
         libBase->events_enabled = FALSE;
         return FALSE;
     }
-    IExec->GetDMAList(libBase->event_pool, libBase->event_pool_size, DMA_ReadFromRAM, dma_list);
+    IExec->GetDMAList(libBase->event_pool, libBase->event_pool_size, 0, dma_list);
     libBase->event_pool_phys = (uint32)dma_list[0].PhysicalAddress;
     libBase->event_pool_dma_list = dma_list;
     libBase->event_pool_dma_entries = entries;
@@ -560,7 +556,7 @@ void ShutdownEventQueue(struct VirtIOSCSIBase *libBase)
     }
 
     if (libBase->event_pool_dma_list) {
-        IExec->EndDMA(libBase->event_pool, libBase->event_pool_size, DMA_ReadFromRAM | DMAF_NoModify);
+        IExec->EndDMA(libBase->event_pool, libBase->event_pool_size, DMAF_NoModify);
         IExec->FreeSysObject(ASOT_DMAENTRY, libBase->event_pool_dma_list);
         libBase->event_pool_dma_list = NULL;
     }

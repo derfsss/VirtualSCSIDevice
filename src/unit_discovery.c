@@ -1,4 +1,5 @@
 #include "unit_discovery.h"
+#include "sandboxvm_tags.h"
 #include "virtio/virtio_scsi_io.h"
 #include <exec/ports.h>
 #include <exec/lists.h>
@@ -44,7 +45,8 @@ uint32 DiscoverUnits(struct VirtIOSCSIBase *devBase)
 {
     struct ExecIFace *iexec = devBase->IExec;
 
-    uint8 *inqData = iexec->AllocVecTags(36, AVT_Type, MEMF_SHARED, AVT_ClearWithValue, 0, TAG_END);
+    uint8 *inqData = iexec->AllocVecTags(36, AVT_Type, MEMF_SHARED, AVT_ClearWithValue, 0,
+                                         SBV_AVT_HostDMA, 0, TAG_END);
     if (!inqData) {
         DPRINTF(iexec, "[virtioscsi:unit_discovery.c] Failed to allocate INQUIRY buffer\n");
         return 0;

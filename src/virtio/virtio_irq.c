@@ -22,6 +22,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
     struct PCIDevice *pciDev = base->pciDevice;
 
     (void)ctx;
+    (void)SysBase;
 
     /*
      * Read the ISR register. This simultaneously:
@@ -103,7 +104,13 @@ BOOL InstallVirtIOInterrupt(struct VirtIOSCSIBase *base)
     base->irq_handler.is_Node.ln_Pri = 0;
     base->irq_handler.is_Node.ln_Name = DEVNAME;
     base->irq_handler.is_Data = (APTR)base;
+    /* is_Code is declared `VOID (*)()` (unprototyped) in <exec/interrupts.h>.
+     * The cast matches the field type exactly; GCC's -Wcast-function-type
+     * still complains because the source has a prototype. Suppress locally. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
     base->irq_handler.is_Code = (VOID (*)())VirtIOSCSI_InterruptHandler;
+#pragma GCC diagnostic pop
 
     /* Install on the shared interrupt chain */
     BOOL ok = IExec->AddIntServer(base->irq_number, &base->irq_handler);

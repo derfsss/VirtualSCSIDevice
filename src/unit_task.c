@@ -3,20 +3,12 @@
 #include "virtioscsi.h"
 #include "virtioscsi_cmds.h"
 #include "scsi_cdb_helpers.h"
+#include "sandboxvm_tags.h"
 #include "virtio/virtio_scsi_io.h"
 #include "virtio/virtqueue.h"
 #include <exec/exec.h>
 #include <exec/exectags.h>
 #include <exec/memory.h>
-
-/* SandboxVM-private AllocVecTags tag -- see comment in virtqueue.c.
- * Routes DMA buffers through the SandboxVM host's real allocator so
- * StartDMA/GetDMAList accept them. Unknown tag value on native AOS4
- * (silently ignored by the utility.library tag walker). Must stay
- * in sync with SandboxVM/VM-OS4/include/sbvm_tags.h. */
-#ifndef SBV_AVT_HostDMA
-#define SBV_AVT_HostDMA        (0x80535601u)
-#endif
 
 /* Forward declaration -- dispatch is defined below.
  * Returns TRUE if at least one VirtIOSCSI_Submit() succeeded (kick pending). */

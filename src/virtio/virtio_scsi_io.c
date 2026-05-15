@@ -3,6 +3,7 @@
 #include "virtio/virtio_scsi_cmd.h"
 #include "virtio/virtqueue.h"
 #include "virtioscsi.h"
+#include "sandboxvm_tags.h"
 #include <exec/exectags.h>
 #include <exec/memory.h>
 
@@ -150,9 +151,11 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
 
     if (unit == NULL) {
         req_cmd = IExec->AllocVecTags(sizeof(struct virtio_scsi_req_cmd),
-                                      AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED, TAG_DONE);
+                                      AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED,
+                                      SBV_AVT_HostDMA, 0, TAG_DONE);
         resp_cmd = IExec->AllocVecTags(sizeof(struct virtio_scsi_resp_cmd),
-                                       AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED, TAG_DONE);
+                                       AVT_ClearWithValue, 0, AVT_Type, MEMF_SHARED,
+                                       SBV_AVT_HostDMA, 0, TAG_DONE);
         if (!req_cmd || !resp_cmd) {
             DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: alloc failed (discovery)\n");
             if (req_cmd)  IExec->FreeVec(req_cmd);

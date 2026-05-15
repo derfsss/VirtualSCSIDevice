@@ -14,6 +14,7 @@
 /* TD_CHANGESTATE: Returns 0 = disk is present (non-removable) */
 void Handle_TD_ChangeState(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 {
+    (void)libBase;
     req->io_Actual = 0;
     req->io_Error = 0;
 }
@@ -21,6 +22,7 @@ void Handle_TD_ChangeState(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 /* TD_PROTSTATUS: Returns 0 = disk is writable (not write-protected) */
 void Handle_TD_ProtStatus(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 {
+    (void)libBase;
     req->io_Actual = 0;
     req->io_Error = 0;
 }
@@ -47,6 +49,7 @@ void Handle_TD_GetDriveType(struct VirtIOSCSIBase *libBase, struct IOStdReq *req
 /* Generic success handler for commands we don't emulate but must return cleanly */
 void Handle_CMD_Success(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 {
+    (void)libBase;
     req->io_Error = 0;
     req->io_Actual = 0;
 }
