@@ -39,7 +39,7 @@ BPTR _manager_Expunge(struct DeviceManagerInterface *Self)
         DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Cleaning up VirtIO queues and hardware.\n");
         CleanupVirtIOSCSI(devBase);
 
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < MAX_UNITS; i++) {
             if (devBase->units[i]) {
                 DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Shutting down unit %d task.\n", i);
                 /* Ensure unit task is stopped before freeing (handles forced expunge) */
@@ -89,7 +89,7 @@ BPTR _manager_Expunge(struct DeviceManagerInterface *Self)
         // Delete the OS4 library and interfaces
         IExec->DeleteLibrary((struct Library *)devBase);
     } else {
-        DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Still in use — setting LIBF_DELEXP.\n");
+        DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Still in use -- setting LIBF_DELEXP.\n");
         devBase->dev_Base.dd_Library.lib_Flags |= LIBF_DELEXP;
     }
 

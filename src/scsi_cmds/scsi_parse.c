@@ -78,17 +78,17 @@ void Parse_SCSI_Command(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
         Handle_SCSI_Write10(libBase, req, scsiCmd);
         break;
 
-    case SCSI_LOG_SENSE: /* LOG SENSE (0x4D) — S.M.A.R.T. */
+    case SCSI_LOG_SENSE: /* LOG SENSE (0x4D) -- S.M.A.R.T. */
         Handle_SCSI_LogSense(libBase, req, scsiCmd);
         break;
 
-    case 0x85: /* ATA PASS-THROUGH (16) — SAT, used by SMART tools */
-    case 0xA1: /* ATA PASS-THROUGH (12) — older tool fallback */
+    case 0x85: /* ATA PASS-THROUGH (16) -- SAT, used by SMART tools */
+    case 0xA1: /* ATA PASS-THROUGH (12) -- older tool fallback */
         Handle_SCSI_ATAPassthrough(libBase, req, scsiCmd);
         break;
 
     default:
-        /* Unsupported opcode — CHECK CONDITION / INVALID COMMAND OPERATION CODE */
+        /* Unsupported opcode -- CHECK CONDITION / INVALID COMMAND OPERATION CODE */
         DPRINTF(libBase->IExec, "[virtioscsi:scsi_parse.c] SCSI unsupported opcode 0x%02lX\n", (uint32)opcode);
         scsiCmd->scsi_Status = 2; /* CHECK CONDITION */
         FillAutoSense(scsiCmd, ILLEGAL_REQUEST, 0x20, 0x00); /* ASC 0x20: INVALID COMMAND OPERATION CODE */

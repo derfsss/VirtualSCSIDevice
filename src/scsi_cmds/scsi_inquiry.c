@@ -77,7 +77,7 @@ void Handle_SCSI_Inquiry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, s
     uint8  pgcode  = (scsiCmd->scsi_CmdLength >= 3) ? cdb[2] : 0;
 
     if (!evpd) {
-        /* Standard INQUIRY — pass through to VirtIO device */
+        /* Standard INQUIRY -- pass through to VirtIO device */
         uint8  scsi_status = 0;
         uint32 residual    = 0;
         struct VirtIOUSCSIDevUnit *unit = (struct VirtIOUSCSIDevUnit *)req->io_Unit;
@@ -111,7 +111,7 @@ void Handle_SCSI_Inquiry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, s
 
     case 0x00: {
         /*
-         * Page 0x00 — Supported VPD Pages List.
+         * Page 0x00 -- Supported VPD Pages List.
          * Lists the three page codes we implement.
          * Format: [devtype][0x00][reserved][page_len][page_codes...]
          */
@@ -128,7 +128,7 @@ void Handle_SCSI_Inquiry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, s
 
     case 0x80: {
         /*
-         * Page 0x80 — Unit Serial Number.
+         * Page 0x80 -- Unit Serial Number.
          * Serial: "VIRTIOSCSI-T%lu" formatted with target_id.
          * Format: [devtype][0x80][reserved][serial_len][serial...]
          */
@@ -150,7 +150,7 @@ void Handle_SCSI_Inquiry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, s
 
     case 0x83: {
         /*
-         * Page 0x83 — Device Identification.
+         * Page 0x83 -- Device Identification.
          * One T10 vendor ID designation descriptor:
          *   code set=ASCII(2), identifier type=T10 vendor(1),
          *   id = "QEMU    virtioscsi      T%lu"
@@ -183,7 +183,7 @@ void Handle_SCSI_Inquiry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, s
     }
 
     default:
-        /* Unsupported VPD page — ILLEGAL REQUEST */
+        /* Unsupported VPD page -- ILLEGAL REQUEST */
         DPRINTF(libBase->IExec, "[virtioscsi:scsi_inquiry.c] VPD unsupported page 0x%02X\n", pgcode);
         vpd_illegal_page(scsiCmd, req);
         break;

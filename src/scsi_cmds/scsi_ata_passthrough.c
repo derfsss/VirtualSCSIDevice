@@ -5,7 +5,7 @@
 /*
  * ATA PASS-THROUGH handler (opcodes 0x85 / 0xA1).
  *
- * VirtIO SCSI is not an ATA device — there is no real ATA layer to query.
+ * VirtIO SCSI is not an ATA device -- there is no real ATA layer to query.
  * SMART applications on AmigaOS 4 (e.g. AmigaDiskBench) send:
  *   CDB[0] = 0x85  (ATA PASS-THROUGH 16, SAT spec)
  *   CDB[14] = 0xB0 (ATA SMART command)
@@ -104,7 +104,7 @@ void Handle_SCSI_ATAPassthrough(struct VirtIOSCSIBase *libBase, struct IOStdReq 
         p[i] = 0;
 
     /*
-     * SMART Read Data / Read Thresholds — both sub-commands get the
+     * SMART Read Data / Read Thresholds -- both sub-commands get the
      * same dummy block (threshold = current value for all attributes,
      * so nothing ever looks critical).
      *
@@ -134,7 +134,7 @@ void Handle_SCSI_ATAPassthrough(struct VirtIOSCSIBase *libBase, struct IOStdReq 
 
     /* Byte 510: offline data collection status (0xC0 = never, no error) */
     buf[510] = 0xC0;
-    /* Byte 511: checksum — 0x00 (not computed; most parsers accept it) */
+    /* Byte 511: checksum -- 0x00 (not computed; most parsers accept it) */
 
     scsiCmd->scsi_Actual = 512;
     scsiCmd->scsi_Status = 0; /* GOOD */

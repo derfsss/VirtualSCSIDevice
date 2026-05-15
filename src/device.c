@@ -41,7 +41,7 @@ const APTR devInterfaces[] = {(APTR)_manager_Tags, (APTR)NULL};
  * MakeFunctions autodoc: "If no pointer or NULL is given, no 68k
  * compatible jump table is generated, except for the default vectors
  * Open, Close, Expunged, and the Reserved vector").  BeginIO at offset
- * -30 and AbortIO at offset -36 end up *absent* — when a legacy handler
+ * -30 and AbortIO at offset -36 end up *absent* -- when a legacy handler
  * like SFS 1.290 calls `jsr -30(a6)` to issue BeginIO, it jumps into
  * unmapped memory and the handler task dies with AN_BadFreeAddr
  * (0x0100000F) from kernel exception cleanup.
@@ -64,7 +64,7 @@ static const char verstag[] __attribute__((used)) = "\0$VER: " DEVVERSIONSTRING;
 
 extern struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Interface *exec);
 
-/* Non-const to match all working OS4 IDE/SATA device drivers — see comment on dev_res. */
+/* Non-const to match all working OS4 IDE/SATA device drivers -- see comment on dev_res. */
 static struct TagItem dev_init_tags[] = {{CLT_DataSize, sizeof(struct VirtIOSCSIBase)},
                                                {CLT_Interfaces, (ULONG)devInterfaces},
                                                {CLT_InitFunc, (ULONG)_manager_Init},
@@ -109,7 +109,7 @@ int _start(char *argstring, int arglen, struct ExecBase *sysbase)
     (void)arglen;
 
     struct ExecIFace *IExec = (struct ExecIFace *)sysbase->MainInterface;
-    IExec->DebugPrintF("%s cannot be executed from a shell — install in SYS:Kickstart/ "
+    IExec->DebugPrintF("%s cannot be executed from a shell -- install in SYS:Kickstart/ "
                        "(with MODULE and diskboot.config entries) and reboot.\n",
                        DEVNAME);
     return 20; /* RETURN_FAIL */

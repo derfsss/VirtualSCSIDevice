@@ -144,7 +144,7 @@ static BOOL alloc_one_bounce(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit 
     /*
      * DMA_ReadFromRAM | ~DMA_ReadFromRAM: we need the bounce buffer
      * accessible in both directions (write: OUT to device; read: IN from
-     * device).  Use DMA_ReadFromRAM for the StartDMA — AmigaOS uses the
+     * device).  Use DMA_ReadFromRAM for the StartDMA -- AmigaOS uses the
      * flags only to determine cache coherency direction; MEMF_SHARED is
      * already non-cacheable so both directions work with either flag.
      * Store the physical base; the DMAEntry list is freed immediately.
@@ -171,7 +171,7 @@ static BOOL alloc_one_bounce(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit 
     IExec->FreeSysObject(ASOT_DMAENTRY, tmp);
 
     /*
-     * Release the DMA mapping immediately — the physical address is cached
+     * Release the DMA mapping immediately -- the physical address is cached
      * in bounce_dma_phys[s].  EndDMA with DMAF_NoModify restores the buffer
      * to normal cacheable state, allowing CopyMem to operate at L1/L2 speed.
      * Cache coherency is handled explicitly in Submit (CacheClearE CACRF_ClearD
@@ -356,12 +356,12 @@ static void UnitTask_Entry(struct UnitTaskStartMsg *startMsg)
         return;
     }
     unit->io_signal_mask = 1UL << isr_bit;
-    unit->io_wait_task   = self; /* persistent — ISR signals us on every completion */
+    unit->io_wait_task   = self; /* persistent -- ISR signals us on every completion */
     unit->io_cookie      = (void *)1; /* non-NULL so ISR check fires; actual matching is in Harvest */
 
     /* Signal parent: port is ready, it's safe to PutMsg to us now */
     IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
-    /* startMsg is stack-allocated in UnitTask_Start — do NOT touch it after this signal */
+    /* startMsg is stack-allocated in UnitTask_Start -- do NOT touch it after this signal */
 
     uint32 wait_mask = unit->io_port_mask | unit->io_signal_mask | SIGBREAKF_CTRL_C;
 
@@ -379,7 +379,7 @@ static void UnitTask_Entry(struct UnitTaskStartMsg *startMsg)
         if (sigs & SIGBREAKF_CTRL_C)
             break;
 
-        /* Harvest completions first — frees inflight slots before we try to fill more */
+        /* Harvest completions first -- frees inflight slots before we try to fill more */
         if (sigs & unit->io_signal_mask)
             VirtIOSCSI_Harvest(libBase, unit);
 
@@ -426,7 +426,7 @@ static void UnitTask_Entry(struct UnitTaskStartMsg *startMsg)
                 unit->inflight[s].ioreq  = NULL;
                 unit->inflight[s].cookie = NULL;
                 if (unit->inflight[s].dma_list) {
-                    /* dma_list points into data_dma_pool — do NOT FreeSysObject */
+                    /* dma_list points into data_dma_pool -- do NOT FreeSysObject */
                     IExec->EndDMA(unit->inflight[s].dma_addr, unit->inflight[s].dma_size,
                                   unit->inflight[s].dma_flags | DMAF_NoModify);
                     unit->inflight[s].dma_list        = NULL;
@@ -512,7 +512,7 @@ BOOL UnitTask_Start(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *u
 
     uint32 ready_mask = 1UL << ready_bit;
 
-    /* Stack-allocate the start message — it lives until the task signals us */
+    /* Stack-allocate the start message -- it lives until the task signals us */
     struct UnitTaskStartMsg startMsg;
     startMsg.libBase     = libBase;
     startMsg.unit        = unit;
@@ -521,11 +521,11 @@ BOOL UnitTask_Start(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *u
     startMsg.ready_bit   = ready_bit;
 
     /* Write the task name into the unit struct so it outlives this stack
-     * frame — CreateTaskTags stores the pointer (ln_Name), not a copy. */
+     * frame -- CreateTaskTags stores the pointer (ln_Name), not a copy. */
     libBase->IUtility->SNPrintf(unit->task_name, sizeof(unit->task_name),
                                 "virtioscsi unit %lu", unit->unit_num);
 
-    /* Pass the start message via AT_Param1 — no Forbid/Permit needed.
+    /* Pass the start message via AT_Param1 -- no Forbid/Permit needed.
      * This is the same pattern the event task uses (virtio_events.c). */
     struct Task *task = IExec->CreateTaskTags(unit->task_name, 5,
                                               UnitTask_Entry, 16384,
@@ -543,7 +543,7 @@ BOOL UnitTask_Start(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *u
     IExec->FreeSignal(ready_bit);
 
     if (!unit->io_port) {
-        /* Task signalled us but port is NULL — it failed to allocate */
+        /* Task signalled us but port is NULL -- it failed to allocate */
         DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Start: task failed to init port\n");
         return FALSE;
     }
@@ -612,7 +612,7 @@ void UnitTask_Shutdown(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit
  *
  * Build a READ or WRITE CDB for a block I/O IORequest and call Submit.
  * Returns TRUE if the request was submitted (Harvest will ReplyMsg later).
- * Returns FALSE on hard failure — caller must set io_Error and ReplyMsg.
+ * Returns FALSE on hard failure -- caller must set io_Error and ReplyMsg.
  *
  * The function handles 32-bit (CMD_READ/WRITE, TD_READ64/WRITE64) and
  * 64-bit NSCMD variants transparently.
@@ -642,10 +642,10 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
 
     int32 rc = VirtIOSCSI_Submit(libBase, unit, ioreq, cdb, cdb_len, is_write);
     if (rc == 0)
-        return TRUE; /* async — Harvest will ReplyMsg */
+        return TRUE; /* async -- Harvest will ReplyMsg */
 
     if (rc == -1) {
-        /* No inflight slot — fall back to synchronous DoIO */
+        /* No inflight slot -- fall back to synchronous DoIO */
         DPRINTF(libBase->IExec, "[virtioscsi:unit_task.c] submit_block_io: no free slot, falling back to DoIO\n");
         uint8  scsi_status = 0;
         uint32 residual    = 0;
@@ -680,7 +680,7 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
  *
  * Block I/O commands (CMD_READ, CMD_WRITE, TD_*64, NSCMD_TD_*64) are
  * submitted to VirtIO asynchronously via VirtIOSCSI_Submit(). On success
- * the request is HELD in an inflight slot — do NOT call ReplyMsg. Harvest
+ * the request is HELD in an inflight slot -- do NOT call ReplyMsg. Harvest
  * will reply when VirtIO signals completion.
  *
  * All other commands (geometry, SCSI pass-through, no-ops) complete
@@ -737,7 +737,7 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
                                     ((uint64)ioreq->io_Actual << 32) | ioreq->io_Offset, TRUE);
         break;
 
-    /* ---- Synchronous commands — reply immediately ---- */
+    /* ---- Synchronous commands -- reply immediately ---- */
     case CMD_UPDATE:
     case CMD_FLUSH:
     case ETD_UPDATE:
@@ -766,7 +766,7 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
         break;
 
     default:
-        DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Dispatch: UNKNOWN cmd %lu (%s) — IOERR_NOCMD\n",
+        DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Dispatch: UNKNOWN cmd %lu (%s) -- IOERR_NOCMD\n",
                 (uint32)ioreq->io_Command, GetCommandName(ioreq->io_Command));
         ioreq->io_Error = IOERR_NOCMD;
         break;

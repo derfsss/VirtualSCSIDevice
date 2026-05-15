@@ -29,7 +29,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
      *   1. Tells us if this interrupt is from our device (non-zero)
      *   2. Acknowledges the interrupt to the device (clears ISR bits)
      *
-     * If ISR == 0, this interrupt is not ours — return 0 to let the
+     * If ISR == 0, this interrupt is not ours -- return 0 to let the
      * next handler in the shared chain process it.
      *
      * In modern mode, the ISR register lives in the ISR_CFG capability region
@@ -56,7 +56,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
      * Scan all units. For each unit with a waiting task, signal it.
      * The per-unit io_cookie is compared against the VirtIO "cookie"
      * (which is req_cmd pointer from AddBuf). If a unit is waiting, we
-     * signal it to wake its task — that task then calls GetBuf() to
+     * signal it to wake its task -- that task then calls GetBuf() to
      * confirm and retrieve the response.
      *
      * Note: we signal unconditionally when io_wait_task is set and
@@ -65,7 +65,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
     if (isr & 1) {
         struct ExecIFace *IExec = base->IExec;
         uint8 mask = base->active_units_mask;
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < MAX_UNITS; i++) {
             if (!(mask & (1 << i)))
                 continue;
             struct VirtIOUSCSIDevUnit *unit = base->units[i];
@@ -76,7 +76,7 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
         /* Wake the event consumer task if one is active.  The event task
          * drains VQ1 (eventq), so any used-ring advance there means a new
          * HOTPLUG / PARAM_CHANGE arrived for it to process.  Spurious wakes
-         * are harmless — the task calls GetBuf which returns NULL in that
+         * are harmless -- the task calls GetBuf which returns NULL in that
          * case and goes back to Wait. */
         if (base->events_enabled && base->event_task)
             IExec->Signal(base->event_task, base->event_signal_mask);

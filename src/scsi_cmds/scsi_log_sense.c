@@ -11,8 +11,8 @@
  * dummy values. This prevents SMART tools from reporting a parse error.
  *
  * Pages supported:
- *   0x00 — Supported Log Pages list
- *   0x2F — Informational Exceptions (S.M.A.R.T. health page, SPC-4 7.3.14)
+ *   0x00 -- Supported Log Pages list
+ *   0x2F -- Informational Exceptions (S.M.A.R.T. health page, SPC-4 7.3.14)
  */
 void Handle_SCSI_LogSense(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, struct SCSICmd *scsiCmd)
 {
@@ -55,8 +55,8 @@ void Handle_SCSI_LogSense(struct VirtIOSCSIBase *libBase, struct IOStdReq *req, 
         /*
          * Informational Exceptions page (SPC-4 7.3.14), used by SMART tools.
          * Two parameters:
-         *   0x0000 — Informational Exceptions general (ASC/ASCQ = 0x00/0x00 = no error)
-         *   0x8000 — Vendor-specific: string identifying this as a VirtIO dummy
+         *   0x0000 -- Informational Exceptions general (ASC/ASCQ = 0x00/0x00 = no error)
+         *   0x8000 -- Vendor-specific: string identifying this as a VirtIO dummy
          */
         temp_buf[0] = 0x2F; /* page code */
         temp_buf[1] = 0x00; /* reserved */

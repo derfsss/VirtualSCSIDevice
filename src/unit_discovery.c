@@ -8,7 +8,7 @@
 /*
  * Initialize the embedded struct Unit inside a VirtIOUSCSIDevUnit to a sane,
  * valid state.  Filesystem handlers (SFS 1.290 in particular) read
- * ioreq->io_Unit and inspect the embedded MsgPort's ln_Type — if it's
+ * ioreq->io_Unit and inspect the embedded MsgPort's ln_Type -- if it's
  * zero (NT_UNKNOWN) the handler treats the unit as corrupt and silently
  * aborts the mount.  We don't use unit_MsgPort as the actual dispatch
  * queue (our unit task has its own io_port), so mark it PA_IGNORE.
@@ -16,7 +16,7 @@
  * gets a clean "no messages" reading.
  *
  * Caller must set unit_num, target_id, lun_id, and media_present before
- * or after this call — those are unit-specific and not part of this init.
+ * or after this call -- those are unit-specific and not part of this init.
  */
 void init_dev_unit(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit)
 {
@@ -36,7 +36,7 @@ void init_dev_unit(struct ExecIFace *IExec, struct VirtIOUSCSIDevUnit *unit)
  *
  * Partition discovery and DOSNode creation are handled by diskboot.kmod
  * (which scans devices listed in diskboot.config).  This driver does NOT
- * call mounter.library directly — that approach was incompatible with
+ * call mounter.library directly -- that approach was incompatible with
  * resident priority 0 (mounter is initialised later).  Standard AmigaOS
  * disk drivers (a1ide.device, peg2ide.device, etc.) follow the same
  * pattern: discover units, register the device, let diskboot do the rest.

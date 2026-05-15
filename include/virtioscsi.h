@@ -24,6 +24,18 @@
 #include "version.h"
 #include "virtio/virtio_scsi_cmd.h"
 
+/*
+ * Named constants for repeated magic literals. The values are the same
+ * the codebase has always used; these names just make grep-able what
+ * each "8" / "3" / "512" actually means at each site.
+ */
+#define MAX_UNITS                 8     /* SCSI target slots scanned at boot, units[] size */
+#define NUM_VIRTIO_QUEUES         3     /* 0=controlq, 1=eventq, 2=requestq */
+#define DEFAULT_BLOCK_SIZE        512   /* fallback when geometry is not yet probed */
+#define SCSI_STATUS_GOOD          0
+#define SCSI_STATUS_CHECK_COND    2     /* SPC-4 status byte for "check condition" */
+#define INQUIRY_RESPONSE_LEN      36    /* SPC standard INQUIRY response length */
+
 struct VirtIOSCSIBase
 {
     struct Device dev_Base;
@@ -66,10 +78,10 @@ struct VirtIOSCSIBase
     uint32 device_cfg_base;    /* Physical: BAR base + DEVICE_CFG cap offset */
 
     /* VirtIO */
-    struct virtqueue *vqs[3]; /* 0: controlq, 1: eventq, 2: requestq */
+    struct virtqueue *vqs[NUM_VIRTIO_QUEUES]; /* 0: controlq, 1: eventq, 2: requestq */
 
     BPTR dev_SegList;
-    struct VirtIOUSCSIDevUnit *units[8];
+    struct VirtIOUSCSIDevUnit *units[MAX_UNITS];
 
     /* Phase 5/6: VirtQueue submit lock (held only during AddBuf+Kick, not during Wait) */
     struct SignalSemaphore io_lock;

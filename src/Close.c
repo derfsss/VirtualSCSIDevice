@@ -2,7 +2,8 @@
 #include "unit_task.h"
 #include <exec/exec.h>
 
-BPTR _manager_Expunge(struct DeviceManagerInterface *Self);
+/* _manager_Expunge prototype lives in virtioscsi.h -- no local forward
+ * declaration needed. */
 
 BPTR _manager_Close(struct DeviceManagerInterface *Self, struct IOStdReq *ioreq)
 {

@@ -4,7 +4,7 @@
 
 /*
  * Shared SCSI READ(10) / WRITE(10) direct command handler.
- * These are HD_SCSICMD pass-through — the CDB is already built by the caller.
+ * These are HD_SCSICMD pass-through -- the CDB is already built by the caller.
  */
 static void handle_scsi_rw10(struct VirtIOSCSIBase *libBase, struct IOStdReq *req,
                              struct SCSICmd *scsiCmd, BOOL is_write)

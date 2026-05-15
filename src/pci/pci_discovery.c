@@ -48,7 +48,7 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      * DWORD, and AmigaOS's later PCI enumerator performs a classic sizing
      * probe (write 0xffffffff, read size, write address back) but fails to
      * write 0 back to the high DWORD.  Result: BAR5 (config offset 0x24)
-     * sits at 0xffffffff, placing BAR4 at 0xffffffff84204000 — outside
+     * sits at 0xffffffff, placing BAR4 at 0xffffffff84204000 -- outside
      * Articia's decoded PCI memory window, so MMIO reads return 0xff and
      * writes are dropped.
      *
@@ -85,7 +85,7 @@ BOOL DiscoverVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     }
 
     /*
-     * Keep the device handle live in libBase->pciDevice — do NOT call
+     * Keep the device handle live in libBase->pciDevice -- do NOT call
      * IPCI->FreeDevice() here. BAR mappings must remain valid for the
      * driver's lifetime; they are released in _manager_Expunge().
      *

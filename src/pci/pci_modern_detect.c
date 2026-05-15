@@ -150,7 +150,7 @@ BOOL DetectModernVirtIO(struct VirtIOSCSIBase *libBase)
         mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x00);
         mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x01); /* ACKNOWLEDGE */
         uint8 probe = mmio_r8(pciDev, base + VIRTIO_PCI_COMMON_STATUS);
-        /* Reset again — clean slate for InitVirtIOSCSI */
+        /* Reset again -- clean slate for InitVirtIOSCSI */
         mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x00);
 
         if (probe == 0x01) {

@@ -37,7 +37,7 @@ struct VirtIOSCSIBase *_manager_Open(struct DeviceManagerInterface *Self, struct
     }
 #endif /* DEBUG */
 
-    if (unitNum > 7) {
+    if (unitNum >= MAX_UNITS) {
         ioreq->io_Error = IOERR_OPENFAIL;
         goto bailout;
     }

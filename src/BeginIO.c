@@ -29,7 +29,7 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
      * === Held Change Notification Commands ===
      *
      * TD_ADDCHANGEINT and TD_REMOVE register callbacks for disk change
-     * notification. The IORequest must NOT be replied to — it stays pending
+     * notification. The IORequest must NOT be replied to -- it stays pending
      * until TD_REMCHANGEINT is issued or the device is closed. Replying
      * immediately causes filesystem handlers (SFS, etc.) to corrupt their
      * linked lists, leading to DSI crashes.
@@ -85,7 +85,7 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     /*
-     * === Simple Commands (handled inline — no unit task needed) ===
+     * === Simple Commands (handled inline -- no unit task needed) ===
      *
      * VirtIO SCSI disks are fixed media: always present, never spinning down.
      * These commands require no hardware interaction and are replied to here.
@@ -159,7 +159,7 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
          * a classic value (likely DRIVE3_5 = 1).  Returning DRIVE_NEWSTYLE
          * may put DOS / diskboot.kmod / SFS into a "modern device" code
          * path that doesn't correctly construct the DOSNode for an RDB
-         * partition on a virtio-scsi device — observed crash: kernel
+         * partition on a virtio-scsi device -- observed crash: kernel
          * deref of a corrupt BPTR (0x22C58000) inside DOS struct walking
          * code, after our TD_GETGEOMETRY reply, before SFS issues any
          * CMD_READ.  Fall back to DRIVE3_5 to match a1ide.device. */
@@ -188,7 +188,7 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return;
 
     /*
-     * === Slow I/O Commands — queued to the unit task ===
+     * === Slow I/O Commands -- queued to the unit task ===
      *
      * These commands involve actual hardware I/O and must not block the
      * calling task. We clear IOF_QUICK, hand the request to the unit task

@@ -22,7 +22,7 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
 
     iexec->InitSemaphore(&devBase->io_lock);
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < MAX_UNITS; i++) {
         devBase->units[i] = NULL;
     }
 
@@ -90,7 +90,7 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
         return NULL;
     }
 
-    /* Install PCI interrupt handler (non-fatal — falls back to polling on failure) */
+    /* Install PCI interrupt handler (non-fatal -- falls back to polling on failure) */
     if (!InstallVirtIOInterrupt(devBase)) {
         DPRINTF(iexec, "[virtioscsi:Init.c] Init: Interrupt install failed, using polling fallback.\n");
     }

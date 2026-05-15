@@ -24,10 +24,10 @@ static int32 map_scsi_error(uint8 virtio_resp, uint8 scsi_status, uint8 sense_ke
     if (scsi_status != 2)
         return HFERR_BadStatus; /* non-CHECK CONDITION non-GOOD status */
 
-    /* CHECK CONDITION — decode sense key */
+    /* CHECK CONDITION -- decode sense key */
     switch (sense_key & 0x0F) {
-    case 0x00: return 0;                  /* NO SENSE — treat as success */
-    case 0x01: return 0;                  /* RECOVERED ERROR — data valid */
+    case 0x00: return 0;                  /* NO SENSE -- treat as success */
+    case 0x01: return 0;                  /* RECOVERED ERROR -- data valid */
     case 0x02: return TDERR_BadDriveType; /* NOT READY */
     case 0x03: return TDERR_BadSecHdr;    /* MEDIUM ERROR */
     case 0x04: return TDERR_BadDriveType; /* HARDWARE ERROR */
@@ -202,7 +202,7 @@ static void complete_inflight_slot(struct ExecIFace *IExec,
  * (unit == NULL during discovery, before unit tasks exist).
  *
  * req_buf and resp_buf on unit are pre-allocated MEMF_SHARED buffers with
- * live DMA mappings — no per-call allocation or DMA setup for these.
+ * live DMA mappings -- no per-call allocation or DMA setup for these.
  * Only the user data buffer (data/data_len) is DMA-mapped per call.
  *
  * Returns 0 on success, non-zero on failure.
@@ -285,7 +285,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
          * and status_qualifier is not used. The first attempt is already clean
          * because the buffer was zeroed at allocation time (AVT_ClearWithValue).
          *
-         * Volatile stores required — MEMF_SHARED is non-cacheable.
+         * Volatile stores required -- MEMF_SHARED is non-cacheable.
          */
         volatile struct virtio_scsi_resp_cmd *vresp =
             (volatile struct virtio_scsi_resp_cmd *)resp_cmd;
@@ -293,7 +293,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
         vresp->status           = 0;
         vresp->residual         = 0;
 
-        /* Fill the request header — overwrite all fields, no prior zero needed */
+        /* Fill the request header -- overwrite all fields, no prior zero needed */
         virtio_scsi_set_lun(req_cmd->lun, (uint8)target, (uint16)lun);
         req_cmd->id        = 1; /* Simple tag */
         req_cmd->task_attr = VIRTIO_SCSI_S_SIMPLE;
@@ -327,7 +327,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
         uint32 out_num = 0;
         uint32 in_num  = 0;
 
-        /* Select req DMA list — pre-mapped for unit path, temp for discovery */
+        /* Select req DMA list -- pre-mapped for unit path, temp for discovery */
         struct DMAEntry *req_dma_list     = temp_alloc ? db_req_tmp.list  : unit->dma_req_list;
         uint32           req_dma_entries  = temp_alloc ? db_req_tmp.num_entries : unit->dma_req_entries;
         struct DMAEntry *resp_dma_list    = temp_alloc ? db_resp_tmp.list : unit->dma_resp_list;
@@ -377,7 +377,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
             break;
         }
 
-        /* Submit to the available ring — hold lock only for AddBuf+Kick */
+        /* Submit to the available ring -- hold lock only for AddBuf+Kick */
         IExec->ObtainSemaphore(&libBase->io_lock);
         int32 rc = VirtQueue_AddBuf(IExec, vq, sg, out_num, in_num, (void *)req_cmd);
         if (rc != 0) {
@@ -406,7 +406,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
         VirtQueue_Kick(IExec, vq, pciDev, iobase);
         IExec->ReleaseSemaphore(&libBase->io_lock);
 
-        /* Wait for completion — interrupt-driven or polling fallback */
+        /* Wait for completion -- interrupt-driven or polling fallback */
         uint32 written = 0;
         void *cookie = NULL;
 
@@ -429,7 +429,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
              * we get our own cookie back.
              *
              * Protocol:
-             *   1. Restore io_cookie to sentinel (void*)1 before waiting — the
+             *   1. Restore io_cookie to sentinel (void*)1 before waiting -- the
              *      ISR only checks io_wait_task != NULL, which stays set.
              *   2. Call GetBuf in a loop; forward non-matching cookies to Harvest.
              *   3. Stop when we get req_cmd back (or time out).
@@ -440,7 +440,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                     sig_mask, (void *)req_cmd,
                     (unsigned)vq->avail->idx, (unsigned)vq->used->idx);
 
-            /* Keep sentinel — ISR stays live for pipeline completions */
+            /* Keep sentinel -- ISR stays live for pipeline completions */
             unit->io_cookie = (void *)1;
             __asm__ volatile("sync" ::: "memory");
 
@@ -474,9 +474,9 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                         written = w;
                         DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: got own cookie %p written=%lu wakes=%lu\n",
                                 cookie, written, (uint32)wakes);
-                        break; /* stop draining — outer loop will exit on cookie != NULL */
+                        break; /* stop draining -- outer loop will exit on cookie != NULL */
                     } else {
-                        /* Completion belongs to another unit's pipeline slot —
+                        /* Completion belongs to another unit's pipeline slot --
                          * inline-harvest it. Search all units (not just this one).
                          * Release lock around ReplyMsg, re-acquire after. */
                         IExec->ReleaseSemaphore(&libBase->io_lock);
@@ -488,7 +488,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                             struct virtio_scsi_req_cmd *xrc = (struct virtio_scsi_req_cmd *)c;
                             uint32 cu = (uint32)(xrc->id >> 16);
                             uint32 cs = (uint32)(xrc->id & 0xFFFF);
-                            if (cs < MAX_INFLIGHT && cu < 8) {
+                            if (cs < MAX_INFLIGHT && cu < MAX_UNITS) {
                                 struct VirtIOUSCSIDevUnit *xtgt = libBase->units[cu];
                                 if (xtgt
                                     && xtgt->inflight[cs].cookie == c
@@ -504,13 +504,13 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                             complete_inflight_slot(IExec, libBase, owner, fslot);
                         } else {
                             /*
-                             * Not a pipeline cookie — may be another unit's DoIO cookie.
+                             * Not a pipeline cookie -- may be another unit's DoIO cookie.
                              * Stash it so that unit's drain loop can pick it up.
                              */
                             IExec->ObtainSemaphore(&libBase->io_lock);
                             struct VirtIOUSCSIDevUnit *doio_other = NULL;
                             uint32 di;
-                            for (di = 0; di < 8; di++) {
+                            for (di = 0; di < MAX_UNITS; di++) {
                                 struct VirtIOUSCSIDevUnit *other2 = libBase->units[di];
                                 if (other2 && (void *)other2->req_buf == c) {
                                     doio_other = other2;
@@ -602,7 +602,7 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                 DPRINTF(IExec, "[virtioscsi] DoIO: T%lu L%lu CHECK CONDITION (Tries left: %ld)\n",
                         target, lun, (long)tries);
                 if (tries > 0)
-                    continue; /* retry — resp re-zeroed at top of loop */
+                    continue; /* retry -- resp re-zeroed at top of loop */
                 result = map_scsi_error(resp_cmd->response, resp_cmd->status,
                                         resp_cmd->sense[2] & 0x0F);
             } else if (resp_cmd->status == 0) {
@@ -672,9 +672,9 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
  * returns immediately.
  *
  * Returns:
- *   0   — slot acquired, request submitted; Harvest will ReplyMsg when done
- *  -1   — no free slot; caller should queue the request for later retry
- *  >0   — hard failure (DMA or AddBuf); caller should set io_Error and ReplyMsg
+ *   0   -- slot acquired, request submitted; Harvest will ReplyMsg when done
+ *  -1   -- no free slot; caller should queue the request for later retry
+ *  >0   -- hard failure (DMA or AddBuf); caller should set io_Error and ReplyMsg
  */
 int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *unit,
                         struct IOStdReq *ioreq, uint8 *cdb, uint32 cdb_len, BOOL is_write)
@@ -682,7 +682,7 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
     struct ExecIFace *IExec = libBase->IExec;
     struct virtqueue *vq = libBase->vqs[2];
 
-    /* Find a free inflight slot — O(1) via free list */
+    /* Find a free inflight slot -- O(1) via free list */
     int32 slot = unit->free_head;
     uint32 i;
     if (slot < 0)
@@ -719,7 +719,7 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
      *   Read data is copied back from the bounce buffer in Harvest.
      *
      * Direct path (data_len > BOUNCE_BUF_SIZE):
-     *   StartDMA/GetDMAList/EndDMA as before — one-time cost for large I/O.
+     *   StartDMA/GetDMAList/EndDMA as before -- one-time cost for large I/O.
      */
     APTR  data      = ioreq->io_Data;
     uint32 data_len = ioreq->io_Length;
@@ -729,13 +729,13 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
     unit->inflight[slot].using_bounce  = FALSE;
 
     if (data && data_len > 0 && data_len <= BOUNCE_BUF_SIZE) {
-        /* Bounce path — no StartDMA needed */
+        /* Bounce path -- no StartDMA needed */
         if (is_write) {
             IExec->CopyMem(data, unit->bounce_bufs[slot], data_len);
             IExec->CacheClearE(unit->bounce_bufs[slot], data_len, CACRF_ClearD);
         }
         unit->inflight[slot].using_bounce  = TRUE;
-        unit->inflight[slot].dma_addr      = data;   /* user buf — for read-back in Harvest */
+        unit->inflight[slot].dma_addr      = data;   /* user buf -- for read-back in Harvest */
         unit->inflight[slot].dma_size      = data_len;
         unit->inflight[slot].dma_flags     = 0;
         unit->inflight[slot].dma_list      = NULL;
@@ -756,7 +756,7 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
         }
         struct DMAEntry *dlist = unit->data_dma_pool[slot];
         if (!dlist || entries > MAX_SG_ENTRIES) {
-            /* Pool entry missing or too many entries — fall back to alloc */
+            /* Pool entry missing or too many entries -- fall back to alloc */
             IExec->EndDMA(data, data_len, dma_flags | DMAF_NoModify);
             unit->inflight_next[slot] = unit->free_head;
             unit->free_head = slot;
@@ -847,7 +847,7 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
         DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: chain too long (%lu) slot=%ld\n",
                 out_num + in_num, (long)slot);
         if (unit->inflight[slot].dma_list) {
-            /* dma_list points into data_dma_pool — do NOT FreeSysObject, just EndDMA */
+            /* dma_list points into data_dma_pool -- do NOT FreeSysObject, just EndDMA */
             IExec->EndDMA(unit->inflight[slot].dma_addr, unit->inflight[slot].dma_size,
                           unit->inflight[slot].dma_flags | DMAF_NoModify);
             unit->inflight[slot].dma_list        = NULL;
@@ -881,13 +881,13 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
         unit->free_head = slot;
         return TDERR_NotSpecified;
     }
-    /* Slot successfully submitted — update occupancy tracking */
+    /* Slot successfully submitted -- update occupancy tracking */
     libBase->occupied_count++;
     unit->inflight_count++;
     libBase->active_units_mask |= (uint8)(1 << unit->unit_num);
     IExec->ReleaseSemaphore(&libBase->io_lock);
 
-    /* Kick deferred to caller — one VirtIOSCSI_Kick() covers the whole batch */
+    /* Kick deferred to caller -- one VirtIOSCSI_Kick() covers the whole batch */
     DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: slot=%ld queued avail_idx=%u cmd=0x%02X len=%lu\n",
             (long)slot, (unsigned)vq->avail->idx, (uint32)cdb[0], data_len);
     return 0;
@@ -941,13 +941,13 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
      * io_lock serialises GetBuf across all unit tasks that share VQ2.
      * Without it, two unit tasks woken by the same ISR both call GetBuf
      * concurrently, increment last_used_idx in lockstep, and each sees
-     * the other's cookie as "unmatched" — losing completions.
+     * the other's cookie as "unmatched" -- losing completions.
      *
      * Protocol: hold lock for GetBuf only, release before ReplyMsg
      * (which can reschedule), then re-acquire for the next iteration.
      */
     /*
-     * Drain loop — lock protocol:
+     * Drain loop -- lock protocol:
      *   ObtainSemaphore before GetBuf, ReleaseSemaphore immediately after.
      *   This ensures only one unit task advances last_used_idx at a time.
      *   ReplyMsg is called without the lock (it can reschedule).
@@ -971,7 +971,7 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
             uint32 candidate_unit = (uint32)(rc->id >> 16);
             uint32 candidate_slot = (uint32)(rc->id & 0xFFFF);
 
-            if (candidate_slot < MAX_INFLIGHT && candidate_unit < 8) {
+            if (candidate_slot < MAX_INFLIGHT && candidate_unit < MAX_UNITS) {
                 struct VirtIOUSCSIDevUnit *target = (candidate_unit == unit->unit_num)
                     ? unit : libBase->units[candidate_unit];
                 if (target
@@ -993,7 +993,7 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
              */
             uint32 u;
             struct VirtIOUSCSIDevUnit *doio_owner = NULL;
-            for (u = 0; u < 8; u++) {
+            for (u = 0; u < MAX_UNITS; u++) {
                 struct VirtIOUSCSIDevUnit *other = libBase->units[u];
                 if (other && (void *)other->req_buf == cookie) {
                     doio_owner = other;
@@ -1027,7 +1027,7 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
     /*
      * Interrupt coalescing: when multiple requests remain in-flight after
      * harvesting, tell the device to wait for all of them before raising the
-     * next interrupt — one ISR per burst instead of one per completion.
+     * next interrupt -- one ISR per burst instead of one per completion.
      *
      * EVENT_IDX formula (VirtIO spec §2.6.7):
      *   Device interrupts when: (new_used - used_event - 1) < (new_used - old_used)

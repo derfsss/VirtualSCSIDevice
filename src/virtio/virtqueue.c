@@ -75,7 +75,7 @@ struct virtqueue *VirtQueue_Allocate(struct ExecIFace *IExec, uint32 queue_index
         return NULL;
     }
 
-    /* Allocate indirect_tables array — parallel to cookies[], initialised to NULL */
+    /* Allocate indirect_tables array -- parallel to cookies[], initialised to NULL */
     void **indirect_tables =
         IExec->AllocVecTags(sizeof(void *) * queue_size, AVT_ClearWithValue, 0, AVT_Type, MEMF_PRIVATE, TAG_DONE);
 
@@ -234,10 +234,10 @@ int32 VirtQueue_AddBuf(struct ExecIFace *IExec, struct virtqueue *vq, struct vri
                 }
                 IExec->EndDMA(itbl, itbl_size, DMA_ReadFromRAM | DMAF_NoModify);
             }
-            /* DMA mapping failed — fall through to direct path */
+            /* DMA mapping failed -- fall through to direct path */
             IExec->FreeVec(itbl);
         }
-        /* Indirect allocation failed — fall through to direct path if room */
+        /* Indirect allocation failed -- fall through to direct path if room */
         if (vq->num_free < total)
             return -1;
     }
@@ -334,7 +334,7 @@ void VirtQueue_Kick(struct ExecIFace *IExec, struct virtqueue *vq, struct PCIDev
          * SetEndian was already called once in InitVirtIOSCSI_Modern(); it
          * persists for the lifetime of this PCIDevice handle.
          */
-        /* notify region is MMIO — OutWord doesn't work, use byte-assembly helper */
+        /* notify region is MMIO -- OutWord doesn't work, use byte-assembly helper */
         mmio_w16(pciDev, vq->notify_addr, (uint16)vq->index);
     } else {
         /* Legacy: write queue index to the shared QUEUE_NOTIFY I/O port. */
@@ -354,15 +354,15 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
      *
      * Must be a base-ISA barrier that is implemented on every PowerPC
      * variant AmigaOS 4.1 FE runs on:
-     *   - AmigaOne  (G3/G4, classic PowerPC)     — sync ✓, lwsync optional
-     *   - Pegasos2  (G4 7457, classic PowerPC)   — sync ✓, lwsync ✓
-     *   - SAM460ex  (PPC 440, Book-E)            — sync ✓, lwsync *absent*
+     *   - AmigaOne  (G3/G4, classic PowerPC)     -- sync ✓, lwsync optional
+     *   - Pegasos2  (G4 7457, classic PowerPC)   -- sync ✓, lwsync ✓
+     *   - SAM460ex  (PPC 440, Book-E)            -- sync ✓, lwsync *absent*
      *
      * lwsync is an optional Power ISA Book II instruction; on PPC 440 it
      * is not part of the defined instruction set and may trap or be
      * silently remapped to sync depending on the implementation.  Using
      * sync is architecturally safe on all three cores and costs only an
-     * extra ~10-40 cycles here — invisible against the MMIO latency the
+     * extra ~10-40 cycles here -- invisible against the MMIO latency the
      * caller is already paying to read the used ring.  The load-before-
      * load ordering we actually need (read used->idx after the device
      * wrote it) is provided by both; sync is simply the universally
@@ -439,7 +439,7 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
      *     last_used_idx drifts ahead of used_event, QEMU's check
      *       (used->idx - used_event - 1) < (used->idx - old_used)
      *     evaluates FALSE and the device never fires an interrupt when the
-     *     IRQ path takes over — drives fail to mount.
+     *     IRQ path takes over -- drives fail to mount.
      *   - Single-request or low-inflight workloads: fire immediately.
      *
      * VirtIOSCSI_Harvest() overrides this with last_used_idx + (occupied-1)

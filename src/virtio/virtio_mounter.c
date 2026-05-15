@@ -32,7 +32,7 @@
  * Failure handling
  * ----------------
  * Mounter being unavailable (library missing, OpenLibrary fails, interface
- * GetInterface fails) is non-fatal — the unit still appears in units[] and
+ * GetInterface fails) is non-fatal -- the unit still appears in units[] and
  * remains usable via OpenDevice("virtioscsi.device", N, ...).  It just
  * won't appear automatically on the Workbench.
  *
@@ -48,7 +48,7 @@
  * EnsureMounter / AnnounceIfHotAdded / DenounceIfAnnounced are called only
  * from the event task (single-threaded for events).  CleanupMounter is
  * called from _manager_Expunge AFTER ShutdownEventQueue has joined the
- * event task — so by the time CleanupMounter runs, no concurrent caller
+ * event task -- so by the time CleanupMounter runs, no concurrent caller
  * exists.
  */
 
@@ -61,7 +61,7 @@ BOOL EnsureMounter(struct VirtIOSCSIBase *libBase)
 {
     struct ExecIFace *IExec = libBase->IExec;
 
-    /* Already open from a previous call — fast path. */
+    /* Already open from a previous call -- fast path. */
     if (libBase->IMounter != NULL)
         return TRUE;
 
@@ -75,7 +75,7 @@ BOOL EnsureMounter(struct VirtIOSCSIBase *libBase)
 
     libBase->MounterBase = IExec->OpenLibrary("mounter.library", MOUNTER_MIN_VERSION);
     if (libBase->MounterBase == NULL) {
-        /* mounter.library is not available — likely the system hasn't
+        /* mounter.library is not available -- likely the system hasn't
          * progressed past pre-mount or the user has stripped it.  Log once
          * per attempt; caller treats FALSE as "skip auto-mount". */
         DPRINTF(IExec, "[virtioscsi:virtio_mounter.c] mounter.library v%lu unavailable\n",
@@ -110,7 +110,7 @@ BOOL AnnounceIfHotAdded(struct VirtIOSCSIBase *libBase,
      * confuse mounter and likely leak a DOSNode. */
     if (unit->announced) {
         DPRINTF(IExec,
-                "[virtioscsi:virtio_mounter.c] AnnounceIfHotAdded: unit %lu already announced — skipping\n",
+                "[virtioscsi:virtio_mounter.c] AnnounceIfHotAdded: unit %lu already announced -- skipping\n",
                 unit->unit_num);
         return TRUE;
     }
@@ -126,7 +126,7 @@ BOOL AnnounceIfHotAdded(struct VirtIOSCSIBase *libBase,
      * Note: the execDeviceName string memory must remain valid until we
      * call DenounceDevice for this unit (per AutoDoc).  DEVNAME is a
      * compile-time constant string in the device's RTF segment, which lives
-     * for the entire device lifetime — no copy required.
+     * for the entire device lifetime -- no copy required.
      */
     BOOL ok = libBase->IMounter->AnnounceDeviceTags(
         DEVNAME,
@@ -166,7 +166,7 @@ void DenounceIfAnnounced(struct VirtIOSCSIBase *libBase,
                 unit->unit_num);
     } else {
         DPRINTF(IExec,
-                "[virtioscsi:virtio_mounter.c] DenounceIfAnnounced: unit %lu mounter gone — clearing flag only\n",
+                "[virtioscsi:virtio_mounter.c] DenounceIfAnnounced: unit %lu mounter gone -- clearing flag only\n",
                 unit->unit_num);
     }
 
@@ -180,14 +180,14 @@ void CleanupMounter(struct VirtIOSCSIBase *libBase)
     /* First pass: denounce every still-announced unit so mounter can drop
      * its DOSNodes cleanly.  Walking units[] is safe because the event task
      * has already exited (caller's contract: ShutdownEventQueue first).  */
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < MAX_UNITS; i++) {
         struct VirtIOUSCSIDevUnit *unit = libBase->units[i];
         if (unit && unit->announced)
             DenounceIfAnnounced(libBase, unit);
     }
 
     /* Second pass: drop the interface and close the library, in that order.
-     * Order matters — DropInterface decrements the library's open count
+     * Order matters -- DropInterface decrements the library's open count
      * managed by GetInterface; CloseLibrary then decrements OpenLibrary's
      * count.  Reversing them risks a double-decrement if the SDK changes. */
     if (libBase->IMounter != NULL) {

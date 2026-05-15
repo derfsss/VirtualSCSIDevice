@@ -15,7 +15,7 @@ void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     /* Zero the whole struct before filling it.  Callers (SFS 1.290 in
      * particular) sometimes hand us a dirty buffer, and SFS refuses to
      * mount if dg_Reserved (or any other unwritten byte) has non-zero
-     * bits — the behaviour is "abort the mount without ever issuing a
+     * bits -- the behaviour is "abort the mount without ever issuing a
      * read", which is exactly what we were seeing. */
     if (geom && req->io_Length >= sizeof(struct DriveGeometry)) {
         uint8 *p = (uint8 *)geom;
@@ -57,7 +57,7 @@ void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
             sectors_per_track = unit->rdb_phys_sectors;
             cylinders         = unit->rdb_phys_cyls;
         } else {
-            /* No RDB — use "linear" geometry.  1 head × 1 sector per
+            /* No RDB -- use "linear" geometry.  1 head × 1 sector per
              * track makes cylinder == LBA, which any partition layout
              * written later by HDToolbox will naturally match (tools
              * re-probe geometry at RDB-creation time). */
@@ -85,7 +85,7 @@ void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
          * to live in BPTR-safe RAM) as the AllocMem() flag set.  On OS4
          * with MEMF_VIRTUAL high-memory pools, returning just MEMF_ANY (0)
          * or MEMF_PUBLIC (1) lets the allocator place the FSSM-attached
-         * DOSEnvVec at addresses >= 0x80000000 — when SFS later follows
+         * DOSEnvVec at addresses >= 0x80000000 -- when SFS later follows
          * fssm_Environ as a BPTR (`addr >> 2`), the round-trip back to an
          * APTR yields an unmapped page and SFS dies with a DSI on the
          * very first dereference (`lwz r8, 64(r10)` reading dn_DosType

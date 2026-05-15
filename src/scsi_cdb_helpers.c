@@ -91,7 +91,7 @@ int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevU
             unit->target_id, unit->lun_id);
 
     /*
-     * Step 1: READ CAPACITY (10) — 8-byte response, 32-bit last LBA.
+     * Step 1: READ CAPACITY (10) -- 8-byte response, 32-bit last LBA.
      * If the returned last LBA is 0xFFFFFFFF the disk is >= 2TB and we must
      * follow up with READ CAPACITY (16) to get the true 64-bit last LBA.
      */
@@ -113,10 +113,10 @@ int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevU
 
     if (last_lba10 == 0xFFFFFFFF) {
         /*
-         * Step 2: READ CAPACITY (16) — 32-byte response, 64-bit last LBA.
+         * Step 2: READ CAPACITY (16) -- 32-byte response, 64-bit last LBA.
          * Disk is >= 2TB; use the 64-bit result.
          */
-        DPRINTF(base->IExec, "[virtioscsi:scsi_cdb_helpers.c] RC10 returned 0xFFFFFFFF — issuing RC16\n");
+        DPRINTF(base->IExec, "[virtioscsi:scsi_cdb_helpers.c] RC10 returned 0xFFFFFFFF -- issuing RC16\n");
 
         uint8 cap16[32] = {0};
         uint8 cdb16[16];
@@ -178,7 +178,7 @@ int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevU
  *   0x44 Sectors           uint32  (= BlocksPerTrack)
  *   0x48 Heads             uint32  (= Surfaces)
  *
- * A missing RDSK signature or a checksum mismatch is NOT an error — it
+ * A missing RDSK signature or a checksum mismatch is NOT an error -- it
  * just means "no RDB on this disk, use the fallback linear geometry".
  */
 int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevUnit *unit)
@@ -228,7 +228,7 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
     /* RDSK signature check */
     if (buf[0] != 'R' || buf[1] != 'D' || buf[2] != 'S' || buf[3] != 'K') {
         DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: no RDSK signature at block 0 "
-                "(got 0x%02x%02x%02x%02x) — using fallback geometry\n",
+                "(got 0x%02x%02x%02x%02x) -- using fallback geometry\n",
                 buf[0], buf[1], buf[2], buf[3]);
         IExec->FreeVec(buf);
         return 0; /* non-fatal */
@@ -245,8 +245,8 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
     /* Sanity: values must be non-zero and factor into something <= total_blocks. */
     if (cyls == 0 || sectors == 0 || heads == 0 ||
         ((uint64)cyls * sectors * heads) > unit->total_blocks) {
-        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: implausible CHS %lu/%lu/%lu (total %llu) — ignoring\n",
-                cyls, heads, sectors, (unsigned long long)unit->total_blocks);
+        DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: implausible CHS %lu/%lu/%lu (total %llu) - ignoring\n",
+                cyls, sectors, heads, (unsigned long long)unit->total_blocks);
         IExec->FreeVec(buf);
         return 0;
     }
@@ -263,12 +263,12 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
      * Now also follow the PartitionList and read the FIRST partition's
      * `de_Surfaces` and `de_BlocksPerTrack`.  These are the values that
      * filesystem handlers (SFS) expect TD_GETGEOMETRY's dg_Heads/
-     * dg_TrackSectors to match — because partition LBAs are computed as
+     * dg_TrackSectors to match -- because partition LBAs are computed as
      * `cyl * de_Surfaces * de_BlocksPerTrack`, and if our reported shape
      * differs from what's in the PartitionBlock, SFS gets a different
      * effective LBA when it cross-references the two.  IDE drivers like
      * a1ide.device avoid this trap because the disk's actual physical
-     * CHS *is* what HDToolbox used to define the partition — so the
+     * CHS *is* what HDToolbox used to define the partition -- so the
      * RDB header CHS, the PartitionBlock CHS, and TD_GETGEOMETRY all
      * agree.  On a virtual disk like ours, MediaToolbox can pick a
      * different shape from what we synthesised at partition-creation
@@ -307,7 +307,7 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
                 if (surfaces > 0 && blkpt > 0 &&
                     surfaces * blkpt == sectors * heads /* same total/cyl */ ) {
                     DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] PartitionBlock CHS shape: "
-                            "Surfaces=%lu BlocksPerTrack=%lu (overrides RDB header's H=%lu S=%lu — "
+                            "Surfaces=%lu BlocksPerTrack=%lu (overrides RDB header's H=%lu S=%lu -- "
                             "same product, different shape)\n",
                             surfaces, blkpt, heads, sectors);
                     unit->rdb_phys_heads   = surfaces;

@@ -5,7 +5,7 @@
  * Handle_CMD_Update: Exec CMD_UPDATE (command 4)
  *
  * On a QEMU VirtIO SCSI backend, SYNCHRONIZE CACHE(10) can time out
- * because the host OS handles disk caching — there is no physical disk
+ * because the host OS handles disk caching -- there is no physical disk
  * write cache to flush. Issuing it causes a VirtIO request timeout which
  * triggers cascading failures in SFS and other filesystems.
  *

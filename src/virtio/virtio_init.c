@@ -19,7 +19,7 @@
  * Big Endian PowerPC, so we pass native values directly.
  */
 
-/* Forward declaration — defined below */
+/* Forward declaration -- defined below */
 static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase);
 
 BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
@@ -33,7 +33,7 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
     }
 
     /* Dispatch to the appropriate init path.
-     * Modern devices (0x1048) may have no BAR0 — they use MMIO via BAR4.
+     * Modern devices (0x1048) may have no BAR0 -- they use MMIO via BAR4.
      * Check modern_mode before requiring BAR0. */
     if (libBase->modern_mode)
         return InitVirtIOSCSI_Modern(libBase);
@@ -107,7 +107,7 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      *
      * VIRTIO_F_EVENT_IDX (bit 29): accepted. Enables interrupt coalescing
      * via used_event (driver writes target used->idx into avail->ring[num]).
-     * The kick-suppression half (avail_event) is NOT used — QEMU legacy mode
+     * The kick-suppression half (avail_event) is NOT used -- QEMU legacy mode
      * never writes avail_event so it stays 0, which would suppress all kicks
      * after the first. VirtIOSCSI_Kick always sends an unconditional notify.
      *
@@ -119,13 +119,13 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
      */
     uint32 guest_features = host_features & (1UL << 29); /* EVENT_IDX only */
     BOOL use_event_idx  = (guest_features & (1UL << 29)) != 0;
-    BOOL use_indirect   = FALSE; /* disabled — endianness incompatibility */
+    BOOL use_indirect   = FALSE; /* disabled -- endianness incompatibility */
     DPRINTF(IExec, "[virtioscsi] InitVirtIO: Guest features: 0x%08lX%s\n", guest_features,
             use_event_idx ? " EVENT_IDX" : "");
     (void)use_indirect; /* suppress unused-variable warning */
     pciDev->OutLong(iobase + VIRTIO_PCI_GUEST_FEATURES, guest_features);
 
-    /* Step 7: VirtQueue Setup — 3 queues: 0=controlq, 1=eventq, 2=requestq */
+    /* Step 7: VirtQueue Setup -- 3 queues: 0=controlq, 1=eventq, 2=requestq */
     for (uint16 q = 0; q <= 2; q++) {
         /* Select the queue */
         pciDev->OutWord(iobase + VIRTIO_PCI_QUEUE_SEL, q);
@@ -175,7 +175,7 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         IExec->GetDMAList(vq->desc, vq->mem_size, DMA_ReadFromRAM, vring_dma);
         uint32 phys_addr = (uint32)vring_dma[0].PhysicalAddress;
         IExec->FreeSysObject(ASOT_DMAENTRY, vring_dma);
-        /* Keep the DMA mapping live for the device's lifetime — EndDMA on cleanup */
+        /* Keep the DMA mapping live for the device's lifetime -- EndDMA on cleanup */
         vq->dma_phys = phys_addr;
         vq->dma_entries = vring_entries;
         uint32 pfn = phys_addr / 4096;
@@ -246,7 +246,7 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
      * do NOT work for MMIO BAR addresses on Pegasos2.
      */
 
-    /* Step 1: Reset — write 0 then poll until device acknowledges */
+    /* Step 1: Reset -- write 0 then poll until device acknowledges */
     mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS, 0x00);
     {
         uint32 tries = 0;
@@ -315,7 +315,7 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
     mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS,
             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
 
-    /* Step 6: Verify FEATURES_OK is still set — device may reject features */
+    /* Step 6: Verify FEATURES_OK is still set -- device may reject features */
     uint8 status_check = mmio_r8(pciDev, base + VIRTIO_PCI_COMMON_STATUS);
     if (!(status_check & VIRTIO_STATUS_FEATURES_OK)) {
         DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: FEATURES_OK rejected! Status=0x%02X\n",
@@ -326,7 +326,7 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
     DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO_Modern: FEATURES_OK accepted. Status=0x%02X\n",
             (uint32)status_check);
 
-    /* Step 7: VirtQueue Setup — queues 0 (controlq), 1 (eventq), 2 (requestq) */
+    /* Step 7: VirtQueue Setup -- queues 0 (controlq), 1 (eventq), 2 (requestq) */
     uint16 q;
     for (q = 0; q <= 2; q++) {
         mmio_w16(pciDev, base + VIRTIO_PCI_COMMON_Q_SELECT, q);
@@ -366,7 +366,7 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
         uint32 desc_phys = (uint32)vring_dma[0].PhysicalAddress;
         IExec->FreeSysObject(ASOT_DMAENTRY, vring_dma);
 
-        /* Keep the DMA mapping live — EndDMA called in VirtQueue_Free */
+        /* Keep the DMA mapping live -- EndDMA called in VirtQueue_Free */
         vq->dma_phys    = desc_phys;
         vq->dma_entries = vring_entries;
 

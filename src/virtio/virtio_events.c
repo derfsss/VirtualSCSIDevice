@@ -22,7 +22,7 @@
  * tasks, because:
  *   - The eventq has no associated unit (events can concern any T/L).
  *   - The handler may need to call VirtIOSCSI_DoIO() to probe a new LUN,
- *     which itself waits on a per-task signal — unsafe from a unit task
+ *     which itself waits on a per-task signal -- unsafe from a unit task
  *     that is itself the one servicing completions.
  *   - Keeps the unit-task hot path free of event-handling branches.
  */
@@ -58,8 +58,8 @@ static BOOL post_event_buf(struct VirtIOSCSIBase *libBase, uint32 slot)
     sg.addr = slot_phys;
     sg.len  = sizeof(struct virtio_scsi_event);
 
-    /* out_num=0, in_num=1 — device writes into our buffer.  Cookie encodes
-     * slot+1 (so 0 is never used as a cookie — VirtQueue_GetBuf treats NULL
+    /* out_num=0, in_num=1 -- device writes into our buffer.  Cookie encodes
+     * slot+1 (so 0 is never used as a cookie -- VirtQueue_GetBuf treats NULL
      * returns as "ring empty"). */
     int32 rc = VirtQueue_AddBuf(IExec, evq, &sg, 0, 1, (void *)(uint32)(slot + 1));
     if (rc != 0) {
@@ -94,7 +94,7 @@ static BOOL parse_sam_lun(const uint8 lun[8], uint32 *target_out, uint32 *lun_ou
  */
 static int32 find_unit_slot(struct VirtIOSCSIBase *libBase, uint32 target, uint32 lun)
 {
-    for (int32 i = 0; i < 8; i++) {
+    for (int32 i = 0; i < MAX_UNITS; i++) {
         struct VirtIOUSCSIDevUnit *u = libBase->units[i];
         if (u && u->target_id == target && u->lun_id == lun)
             return i;
@@ -107,7 +107,7 @@ static int32 find_unit_slot(struct VirtIOSCSIBase *libBase, uint32 target, uint3
  * and there is a free slot in units[], allocate a unit struct and install it.
  * Returns TRUE if a new unit was added.
  *
- * Does NOT start a unit task for the new unit, does NOT call mounter —
+ * Does NOT start a unit task for the new unit, does NOT call mounter --
  * those integrations are deferred (see ROADMAP Phase 10).  The unit is
  * visible to subsequent OpenDevice() calls; boot-time diskboot.kmod has
  * already completed so DOSNode creation would require mounter.library.
@@ -122,7 +122,7 @@ static BOOL probe_and_add(struct VirtIOSCSIBase *libBase, uint32 target, uint32 
     }
 
     int32 free_slot = -1;
-    for (int32 i = 0; i < 8; i++) {
+    for (int32 i = 0; i < MAX_UNITS; i++) {
         if (!libBase->units[i]) {
             free_slot = i;
             break;
@@ -166,7 +166,7 @@ static BOOL probe_and_add(struct VirtIOSCSIBase *libBase, uint32 target, uint32 
 
                 /* Phase 10: hand the unit over to mounter.library so a
                  * DOSNode is created and the disk appears on the desktop.
-                 * Non-fatal if mounter is unavailable — the unit remains
+                 * Non-fatal if mounter is unavailable -- the unit remains
                  * accessible via OpenDevice(). */
                 AnnounceIfHotAdded(libBase, unit);
             }
@@ -217,7 +217,7 @@ static void notify_media_change(struct VirtIOSCSIBase *libBase,
 
     /* TD_REMOVE follows the same held-request pattern but fires on device
      * removal rather than media change.  For media change alone we don't
-     * touch it — it fires on the REMOVED transport event, below. */
+     * touch it -- it fires on the REMOVED transport event, below. */
 }
 
 /*
@@ -230,7 +230,7 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
     uint32 reason = ev_r32(ev->reason);
 
     if (event & VIRTIO_SCSI_T_EVENTS_MISSED) {
-        DPRINTF(IExec, "[virtioscsi:virtio_events.c] EVENTS_MISSED flag set — one or more events dropped\n");
+        DPRINTF(IExec, "[virtioscsi:virtio_events.c] EVENTS_MISSED flag set -- one or more events dropped\n");
         event &= ~VIRTIO_SCSI_T_EVENTS_MISSED;
     }
 
@@ -257,11 +257,11 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
             int32 slot = find_unit_slot(libBase, target, lun);
             if (slot >= 0) {
                 DPRINTF(IExec,
-                        "[virtioscsi:virtio_events.c] RESET_RESCAN T%lu L%lu — existing unit %ld, medium inserted\n",
+                        "[virtioscsi:virtio_events.c] RESET_RESCAN T%lu L%lu -- existing unit %ld, medium inserted\n",
                         target, lun, slot);
                 notify_media_change(libBase, libBase->units[slot], TRUE);
             } else {
-                DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_RESCAN T%lu L%lu — new device, probing\n", target, lun);
+                DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_RESCAN T%lu L%lu -- new device, probing\n", target, lun);
                 probe_and_add(libBase, target, lun);
             }
             break;
@@ -305,7 +305,7 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
         case VIRTIO_SCSI_EVT_RESET_HARD:
             DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_HARD: device-wide reset reported\n");
             /* Every unit sees a media change; wake all pending changeints. */
-            for (int32 i = 0; i < 8; i++) {
+            for (int32 i = 0; i < MAX_UNITS; i++) {
                 struct VirtIOUSCSIDevUnit *u = libBase->units[i];
                 if (u)
                     notify_media_change(libBase, u, u->media_present);
@@ -333,7 +333,7 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
         uint8 ascq = (uint8)((reason >> 8) & 0xFF);
 
         /* Well-known ASC codes we care about.  Anything else counts as a
-         * generic change — bump counter, invalidate geometry, wake listener. */
+         * generic change -- bump counter, invalidate geometry, wake listener. */
         switch (asc) {
         case 0x28:
             /* NOT READY TO READY CHANGE, MEDIUM MAY HAVE CHANGED (ascq 0x00).
@@ -343,7 +343,7 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
             notify_media_change(libBase, unit, TRUE);
             break;
         case 0x3A:
-            /* MEDIUM NOT PRESENT — ejected. */
+            /* MEDIUM NOT PRESENT -- ejected. */
             DPRINTF(IExec, "[virtioscsi:virtio_events.c] PARAM_CHANGE T%lu L%lu: medium ejected (asc=%02X ascq=%02X)\n",
                     target, lun, (uint32)asc, (uint32)ascq);
             notify_media_change(libBase, unit, FALSE);
@@ -352,7 +352,7 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
         case 0x3F: /* REPORTED LUNS DATA HAS CHANGED */
         default:
             DPRINTF(IExec,
-                    "[virtioscsi:virtio_events.c] PARAM_CHANGE T%lu L%lu: asc=%02X ascq=%02X — generic change\n",
+                    "[virtioscsi:virtio_events.c] PARAM_CHANGE T%lu L%lu: asc=%02X ascq=%02X -- generic change\n",
                     target, lun, (uint32)asc, (uint32)ascq);
             /* Keep current media_present state; only bump counter and drop
              * cached geometry so the next access re-reads capacity. */
@@ -406,7 +406,7 @@ static void event_task_entry(struct VirtIOSCSIBase *libBase)
                     continue;
                 struct virtio_scsi_event *ev =
                     (struct virtio_scsi_event *)(libBase->event_pool + slot * sizeof(struct virtio_scsi_event));
-                /* Ensure cache coherency — the device wrote via DMA */
+                /* Ensure cache coherency -- the device wrote via DMA */
                 IExec->CacheClearE(ev, sizeof(*ev), CACRF_InvalidateD);
                 handle_event(libBase, ev);
 
@@ -432,7 +432,7 @@ static void event_task_entry(struct VirtIOSCSIBase *libBase)
     DPRINTF(IExec, "[virtioscsi:virtio_events.c] event_task exiting\n");
 
     /* Signal the shutdown caller (may be NULL if shutdown never called).
-     * Capture pointers/mask locally so we can clear event_task last — once
+     * Capture pointers/mask locally so we can clear event_task last -- once
      * event_task is NULL, ShutdownEventQueue may begin tearing down state. */
     struct Task *exit_task = libBase->event_exit_task;
     uint32       exit_mask = libBase->event_exit_mask;
@@ -446,12 +446,12 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
     struct ExecIFace *IExec = libBase->IExec;
 
     if (!libBase->events_enabled) {
-        DPRINTF(IExec, "[virtioscsi:virtio_events.c] HOTPLUG/CHANGE not negotiated — event queue idle\n");
+        DPRINTF(IExec, "[virtioscsi:virtio_events.c] HOTPLUG/CHANGE not negotiated -- event queue idle\n");
         return TRUE;
     }
 
     if (!libBase->vqs[1]) {
-        DPRINTF(IExec, "[virtioscsi:virtio_events.c] VQ1 not configured — cannot start event queue\n");
+        DPRINTF(IExec, "[virtioscsi:virtio_events.c] VQ1 not configured -- cannot start event queue\n");
         libBase->events_enabled = FALSE;
         return FALSE;
     }
@@ -502,7 +502,7 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
     }
 
     if (posted == 0) {
-        DPRINTF(IExec, "[virtioscsi:virtio_events.c] no event buffers posted — disabling eventq\n");
+        DPRINTF(IExec, "[virtioscsi:virtio_events.c] no event buffers posted -- disabling eventq\n");
         ShutdownEventQueue(libBase);
         return FALSE;
     }
@@ -512,7 +512,7 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
                    libBase->bar0 ? (uint32)libBase->bar0->Physical : 0);
 
     /* Start the consumer task.  libBase is passed directly as arg1 via
-     * AT_Param1 — no Forbid/Permit dance, no tc_UserData shuffling. */
+     * AT_Param1 -- no Forbid/Permit dance, no tc_UserData shuffling. */
     libBase->event_task_shutdown = FALSE;
     libBase->event_exit_task = NULL;
     libBase->event_exit_mask = 0;
@@ -525,7 +525,7 @@ BOOL InitEventQueue(struct VirtIOSCSIBase *libBase)
         TAG_DONE);
 
     if (!libBase->event_task) {
-        DPRINTF(IExec, "[virtioscsi:virtio_events.c] event task creation failed — eventq disabled\n");
+        DPRINTF(IExec, "[virtioscsi:virtio_events.c] event task creation failed -- eventq disabled\n");
         ShutdownEventQueue(libBase);
         return FALSE;
     }
@@ -540,7 +540,7 @@ void ShutdownEventQueue(struct VirtIOSCSIBase *libBase)
 
     if (libBase->event_task) {
         /* Allocate a signal bit in THIS task's context for the worker to
-         * signal on exit.  Can't use event_signal_mask — that's allocated
+         * signal on exit.  Can't use event_signal_mask -- that's allocated
          * by the worker and only valid in its own context. */
         int8 bit = IExec->AllocSignal(-1);
         uint32 mask = (bit >= 0) ? (1UL << bit) : 0;
@@ -558,7 +558,7 @@ void ShutdownEventQueue(struct VirtIOSCSIBase *libBase)
             IExec->Wait(mask);
             IExec->FreeSignal(bit);
         } else {
-            /* No signal bit available — fall back to yielding until worker
+            /* No signal bit available -- fall back to yielding until worker
              * clears its pointer.  Rare path; losing this race leaks the
              * event pool, which is acceptable at device teardown. */
             while (libBase->event_task)
