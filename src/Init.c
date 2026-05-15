@@ -54,6 +54,13 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
     devBase->UtilityBase = iexec->OpenLibrary("utility.library", 50);
     if (!devBase->UtilityBase) {
         DPRINTF(iexec, "[virtioscsi:Init.c] Init: Failed to open utility.library v50.\n");
+        /* DiscoverVirtIOSCSI set pciDevice/bar0/bar4 -- release them.
+         * Init returns NULL so the kernel discards the library, no Expunge
+         * call will run, which means we MUST free these here or they leak
+         * permanently. */
+        if (devBase->bar0)  devBase->pciDevice->FreeResourceRange(devBase->bar0);
+        if (devBase->bar4)  devBase->pciDevice->FreeResourceRange(devBase->bar4);
+        if (devBase->pciDevice) devBase->IPCI->FreeDevice(devBase->pciDevice);
         iexec->DropInterface((struct Interface *)devBase->IPCI);
         iexec->CloseLibrary(devBase->ExpansionBase);
         return NULL;
@@ -61,6 +68,9 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
     devBase->IUtility = (struct UtilityIFace *)iexec->GetInterface(devBase->UtilityBase, "main", 1, NULL);
     if (!devBase->IUtility) {
         DPRINTF(iexec, "[virtioscsi:Init.c] Init: Failed to get IUtility interface.\n");
+        if (devBase->bar0)  devBase->pciDevice->FreeResourceRange(devBase->bar0);
+        if (devBase->bar4)  devBase->pciDevice->FreeResourceRange(devBase->bar4);
+        if (devBase->pciDevice) devBase->IPCI->FreeDevice(devBase->pciDevice);
         iexec->CloseLibrary(devBase->UtilityBase);
         iexec->DropInterface((struct Interface *)devBase->IPCI);
         iexec->CloseLibrary(devBase->ExpansionBase);
@@ -70,6 +80,9 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
     /* Initialize VirtIO queues */
     if (!InitVirtIOSCSI(devBase)) {
         CleanupVirtIOSCSI(devBase);
+        if (devBase->bar0)  devBase->pciDevice->FreeResourceRange(devBase->bar0);
+        if (devBase->bar4)  devBase->pciDevice->FreeResourceRange(devBase->bar4);
+        if (devBase->pciDevice) devBase->IPCI->FreeDevice(devBase->pciDevice);
         iexec->DropInterface((struct Interface *)devBase->IUtility);
         iexec->CloseLibrary(devBase->UtilityBase);
         iexec->DropInterface((struct Interface *)devBase->IPCI);

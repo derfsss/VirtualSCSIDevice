@@ -64,6 +64,11 @@ BOOL DetectModernVirtIO(struct VirtIOSCSIBase *libBase)
          */
         uint32 addr = bar->BaseAddress + offset;
         uint32 phys = bar->Physical + offset;
+        /* The PCIResourceRange handle is per-call and is not needed beyond
+         * the integer extraction above. Release it to avoid a leak per
+         * capability (typically 4 caps per cold boot). bar0/bar4 are
+         * separately obtained and tracked in libBase by pci_discovery.c. */
+        pciDev->FreeResourceRange(bar);
 
         switch (cfg_type) {
         case VIRTIO_PCI_CAP_COMMON_CFG:
@@ -116,15 +121,15 @@ BOOL DetectModernVirtIO(struct VirtIOSCSIBase *libBase)
      * QEMU machine, but MMIO only works if the PCI bridge forwards CPU
      * memory cycles to device BARs:
      *
-     *   Pegasos2 (MV64361 transparent bridge): probe passes → modern mode
-     *   AmigaOne (Articia S floating buffer):  probe fails  → legacy fallback
+     *   Pegasos2 (MV64361 transparent bridge): probe passes -> modern mode
+     *   AmigaOne (Articia S floating buffer):  probe fails  -> legacy fallback
      *
      * Probe sequence (same pattern as VirtIOGPU chip_scan_pci_caps):
      *   1. Enable PCI Memory Space + Bus Master
      *   2. Reset device (STATUS = 0)
      *   3. Write STATUS = ACKNOWLEDGE (0x01)
      *   4. Read STATUS back
-     *   5. Match → MMIO works; mismatch → MMIO broken, clear modern_mode
+     *   5. Match -> MMIO works; mismatch -> MMIO broken, clear modern_mode
      *   6. Reset device again to leave clean state for InitVirtIOSCSI
      */
     if (libBase->modern_mode && libBase->common_cfg_base) {
@@ -150,11 +155,11 @@ BOOL DetectModernVirtIO(struct VirtIOSCSIBase *libBase)
 
         if (probe == 0x01) {
             DPRINTF(IExec,
-                    "[virtioscsi:pci_modern_detect.c] MMIO probe OK (status=0x%02X) — modern mode confirmed.\n",
+                    "[virtioscsi:pci_modern_detect.c] MMIO probe OK (status=0x%02X): modern mode confirmed.\n",
                     (uint32)probe);
         } else {
             DPRINTF(IExec,
-                    "[virtioscsi:pci_modern_detect.c] MMIO probe FAILED (status=0x%02X, expected 0x01) — "
+                    "[virtioscsi:pci_modern_detect.c] MMIO probe FAILED (status=0x%02X, expected 0x01): "
                     "falling back to legacy.\n",
                     (uint32)probe);
             libBase->modern_mode = FALSE;

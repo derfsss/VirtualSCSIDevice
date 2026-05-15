@@ -159,12 +159,17 @@ BOOL InitVirtIOSCSI(struct VirtIOSCSIBase *libBase)
         uint32 vring_entries = IExec->StartDMA(vq->desc, vq->mem_size, DMA_ReadFromRAM);
         if (vring_entries == 0) {
             DPRINTF(IExec, "[virtioscsi:virtio_init.c] InitVirtIO: StartDMA failed for queue %u\n", q);
+            /* vq was allocated by VirtQueue_Allocate but never assigned to
+             * libBase->vqs[q], so CleanupVirtIOSCSI would not see it -- free
+             * here before returning FALSE. */
+            VirtQueue_Free(IExec, vq);
             return FALSE;
         }
         struct DMAEntry *vring_dma = (struct DMAEntry *)IExec->AllocSysObjectTags(
             ASOT_DMAENTRY, ASODMAE_NumEntries, vring_entries, TAG_DONE);
         if (!vring_dma) {
             IExec->EndDMA(vq->desc, vq->mem_size, DMA_ReadFromRAM | DMAF_NoModify);
+            VirtQueue_Free(IExec, vq);
             return FALSE;
         }
         IExec->GetDMAList(vq->desc, vq->mem_size, DMA_ReadFromRAM, vring_dma);
