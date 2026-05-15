@@ -486,14 +486,14 @@ major-version concern). `lib_Version` stays at 53 in the Resident
 struct so OpenDevice and the OS4 filesystems still accept the driver.
 
 > **Status note:** v1.9 originally also shipped a VirtIO event-queue
-> consumer that handled runtime device add/remove and CD media change
-> events. That code path is currently disabled (`InitEventQueue` is
-> commented out in `src/Init.c` pending resolution of an SFS 1.290
-> interaction); the supporting modules `src/virtio/virtio_events.c`
-> and `src/virtio/virtio_mounter.c` remain in the tree but are
-> dormant. The detailed write-up below is preserved for reference;
-> end-user documentation has been scrubbed to not advertise these
-> features.
+> consumer (`src/virtio/virtio_events.c`) and a mounter.library hot-add
+> integration (`src/virtio/virtio_mounter.c`) that together handled
+> runtime device add/remove and CD media change events. That code path
+> was disabled in v1.10 (the `InitEventQueue()` call was commented out
+> in `src/Init.c` pending resolution of an SFS 1.290 mount interaction)
+> and both source modules were deleted post-v1.10 once it became clear
+> the feature would not be revisited for this driver. The original
+> design write-up is preserved below for reference.
 
 ### Modern VirtIO MMIO on AmigaOne
 
@@ -529,26 +529,27 @@ struct so OpenDevice and the OS4 filesystems still accept the driver.
   entries as LE while PPC writes native BE) and on VQ1 (single-region
   buffers).
 
-### Dormant: event-queue consumer (currently disabled)
+### Removed (originally v1.9, deleted post-v1.10): event-queue consumer
 
-Implementation kept in `src/virtio/virtio_events.c`. The work was:
-asynchronous device-event consumer task draining VQ1, handling
+The original `src/virtio/virtio_events.c` was an asynchronous device-event
+consumer task draining VQ1, handling
 `VIRTIO_SCSI_T_TRANSPORT_RESET` (`RESCAN`/`REMOVED`) and
 `VIRTIO_SCSI_T_PARAM_CHANGE` (medium inserted/removed) to do live
 unit add/remove and CD media-change handling without a reboot.
-Disabled by commenting out the `InitEventQueue()` call in `Init.c`
-pending resolution of an SFS 1.290 mount interaction observed during
-v53.8 -> v1.10 troubleshooting.
+Disabled in v1.10 (the `InitEventQueue()` call in `Init.c` was
+commented out) after an SFS 1.290 mount interaction surfaced during
+v53.8 -> v1.10 troubleshooting; the file was removed entirely
+shortly after. Recovering the feature would mean restoring the file
+from git history (`git log -- src/virtio/virtio_events.c`).
 
-### Dormant: hot-add mounter integration (currently disabled)
+### Removed (originally v1.9, deleted post-v1.10): hot-add mounter integration
 
-Implementation kept in `src/virtio/virtio_mounter.c`. Lazy-open
-mounter.library, `AnnounceDeviceTags` with DOS-name prefix hint
-`VSCSI`, `DenounceDevice` on removal, cleanup pass in
-`_manager_Expunge`. Only fires when the event-queue consumer above
-is active, so dormant for the same reason. The `Expunge`-time
-denounce loop is still wired (`virtio_mounter.c:CleanupMounter`)
-to clean up any state left from previous activations.
+The original `src/virtio/virtio_mounter.c` lazy-opened mounter.library,
+called `AnnounceDeviceTags` with DOS-name prefix hint `VSCSI`, and
+mirrored that with `DenounceDevice` on removal plus a cleanup pass in
+`_manager_Expunge`. It only ever fired when the event-queue consumer
+above was active, so it became unreachable once that path was disabled
+and was deleted along with it.
 
 ### Stability
 
@@ -596,13 +597,11 @@ to clean up any state left from previous activations.
 - `src/pci/pci_discovery.c` — BAR5 high-DWORD fix-up before
   `GetResourceRange(4)`
 - `src/virtio/virtio_events.c` — event-queue consumer task
-  (dormant: `InitEventQueue()` call commented out in `Init.c`)
-- `src/virtio/virtio_mounter.c` — lazy `mounter.library`
-  integration (dormant: only invoked from event-queue path; the
-  Expunge denounce-all sweep remains active for cleanup)
+  (subsequently deleted; see "Removed" subsections above)
+- `src/virtio/virtio_mounter.c` — lazy `mounter.library` integration
+  (subsequently deleted; see "Removed" subsections above)
 - `src/virtio/virtio_init.c` — INDIRECT_DESC feature bit accepted
   on modern path
-- `src/Expunge.c` — denounce-all-announced cleanup pass
 - `include/version.h` — display version `1.9`, lib_Version pinned
   at 53
 - `Makefile` — debug-variant target, LHA layout

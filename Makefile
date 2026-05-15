@@ -34,8 +34,7 @@ SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c
       src/ns_cmds/ns_td_getgeometry64.c src/ns_cmds/ns_td_io64.c \
       src/pci/pci_discovery.c src/pci/pci_modern_detect.c \
       src/virtio/virtio_init.c src/virtio/virtqueue.c \
-      src/virtio/virtio_irq.c src/virtio/virtio_scsi_io.c \
-      src/virtio/virtio_events.c src/virtio/virtio_mounter.c
+      src/virtio/virtio_irq.c src/virtio/virtio_scsi_io.c
 
 OBJ = $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(SRC))
 OBJ_DEBUG = $(patsubst src/%.c, $(DEBUG_OBJ_DIR)/%.o, $(SRC))

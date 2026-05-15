@@ -1,6 +1,5 @@
 #include "pci/pci_discovery.h"
 #include "unit_discovery.h"
-#include "virtio/virtio_events.h"
 #include "virtio/virtio_init.h"
 #include "virtio/virtio_irq.h"
 #include "virtioscsi.h"
@@ -107,14 +106,9 @@ struct Library *_manager_Init(struct Library *library, BPTR seglist, struct Inte
     devBase->dev_Base.dd_Library.lib_Revision = DEVREV;
     devBase->dev_Base.dd_Library.lib_IdString = DEVVERSIONSTRING;
 
-    /* Scan SCSI targets and announce to mounter.library */
+    /* Scan SCSI targets at boot; runtime add/remove and CD media change
+     * are not supported in this driver (see HISTORY.md). */
     DiscoverUnits(devBase);
-
-    /* DEBUG: temporarily disabled to isolate the SFS 1.290 mount-hang
-     * regression.  If SFS no longer crashes with the event queue off,
-     * the bug is in virtio_events.c's task / shared-state setup. */
-    /* InitEventQueue(devBase); */
-    DPRINTF(iexec, "[virtioscsi:Init.c] *** EVENT QUEUE DISABLED FOR SFS DEBUG ***\n");
 
     DPRINTF(iexec, "[virtioscsi:Init.c] Init: Device library initialized and public.\n");
 

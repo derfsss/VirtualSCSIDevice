@@ -4,6 +4,8 @@
 #include "virtioscsi.h"
 #include <devices/newstyle.h>
 #include <devices/scsidisk.h>
+/* SDK quirk: struct DriveGeometry64 (used by NSCMD_TD_GETGEOMETRY64) lives
+ * in libraries/mounter.h, not in any device header. */
 #include <libraries/mounter.h>
 
 #ifndef NSCMD_TD_GETGEOMETRY64

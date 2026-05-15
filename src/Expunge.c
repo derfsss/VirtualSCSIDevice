@@ -1,7 +1,5 @@
-#include "virtio/virtio_events.h"
 #include "virtio/virtio_init.h"
 #include "virtio/virtio_irq.h"
-#include "virtio/virtio_mounter.h"
 #include "virtioscsi.h"
 #include "unit_task.h"
 #include <exec/exec.h>
@@ -20,17 +18,6 @@ BPTR _manager_Expunge(struct DeviceManagerInterface *Self)
 
         IExec->Remove((struct Node *)devBase);
         DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Removed from device list.\n");
-
-        /* Stop the event consumer task before tearing down queues.
-         * ShutdownEventQueue is a no-op if events were never started. */
-        DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Shutting down event queue.\n");
-        ShutdownEventQueue(devBase);
-
-        /* Phase 10: tear down mounter.library integration.  MUST follow
-         * ShutdownEventQueue so no event-task code is racing with the
-         * Denounce/CloseLibrary calls.  No-op if mounter was never opened. */
-        DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Cleaning up mounter integration.\n");
-        CleanupMounter(devBase);
 
         /* Remove interrupt handler before resetting VirtIO hardware */
         DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Removing VirtIO interrupt handler.\n");

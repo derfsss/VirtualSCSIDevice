@@ -281,20 +281,19 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
 
     /*
      * Accept on modern MMIO path:
-     *   - VIRTIO_SCSI_F_HOTPLUG (bit 1): async hotplug events on eventq.
-     *   - VIRTIO_SCSI_F_CHANGE  (bit 2): async param-change events on eventq.
      *   - VIRTIO_F_INDIRECT_DESC (bit 28): one vring slot per SG chain.
      *   - VIRTIO_F_EVENT_IDX    (bit 29): interrupt coalescing.
      *   - VIRTIO_F_VERSION_1    (bit 0 high = bit 32): mandatory for modern.
+     *
+     * VIRTIO_SCSI_F_HOTPLUG (bit 1) and VIRTIO_SCSI_F_CHANGE (bit 2) are
+     * not negotiated: runtime device add/remove and CD media change are
+     * not supported by this driver.
      *
      * INDIRECT_DESC was previously rejected due to a legacy-mode endianness
      * asymmetry (QEMU read indirect tables LE while PPC wrote BE).  On the
      * modern MMIO path both sides agree on LE, and virtqueue.c wraps all
      * indirect-table writes with vr64/vr32/vr16, so it's safe to enable.
      */
-    /* DEBUG: HOTPLUG (bit 1) + CHANGE (bit 2) deliberately NOT negotiated
-     * to isolate the SFS 1.290 mount-hang.  If SFS still crashes with these
-     * off, the bug is unrelated to the v1.9 event-queue feature set. */
     uint32 drv_feat_lo = dev_feat_lo & ((1UL << 28)  /* INDIRECT_DESC */
                                        | (1UL << 29)  /* EVENT_IDX */);
     uint32 drv_feat_hi = dev_feat_hi & 1UL;          /* VIRTIO_F_VERSION_1 */
@@ -309,7 +308,6 @@ static BOOL InitVirtIOSCSI_Modern(struct VirtIOSCSIBase *libBase)
             drv_feat_hi, drv_feat_lo);
     BOOL use_event_idx = (drv_feat_lo & (1UL << 29)) != 0;
     BOOL use_indirect  = (drv_feat_lo & (1UL << 28)) != 0;
-    libBase->events_enabled = (drv_feat_lo & ((1UL << 1) | (1UL << 2))) != 0;
 
     /* Step 5: Set FEATURES_OK */
     mmio_w8(pciDev, base + VIRTIO_PCI_COMMON_STATUS,

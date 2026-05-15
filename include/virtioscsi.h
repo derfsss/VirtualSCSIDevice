@@ -16,9 +16,7 @@
 
 #include <expansion/pci.h>
 #include <interfaces/expansion.h>
-#include <interfaces/mounter.h>
 #include <interfaces/utility.h>
-#include <libraries/mounter.h>
 #include <utility/utility.h>
 
 #include "version.h"
@@ -45,25 +43,6 @@ struct VirtIOSCSIBase
     struct Library *UtilityBase;
     struct UtilityIFace *IUtility;
 
-    /*
-     * Phase 10: mounter.library handle for hot-add DOSNode publication.
-     *
-     * Lifecycle:
-     *   - Both pointers start NULL.  First-time use is lazy: the event task
-     *     calls EnsureMounter() before AnnounceDevice / DenounceDevice and
-     *     skips the call if open fails (mounter is non-fatal — the unit is
-     *     still reachable via OpenDevice even without auto-mount).
-     *   - Cleanup happens in _manager_Expunge AFTER ShutdownEventQueue
-     *     completes, so no event-task code is racing the close.
-     *
-     * Why lazy: at boot (resident priority 0), mounter.library is not yet
-     * initialised — calling AnnounceDevice from Init crashes MediaToolbox
-     * (verified empirically pre-v53.8).  Boot-time disks already get their
-     * DOSNodes from diskboot.kmod via diskboot.config; the mounter path is
-     * exclusively for hot-added disks discovered after boot.
-     */
-    struct Library      *MounterBase;
-    struct MounterIFace *IMounter;
     struct PCIDevice *pciDevice;
     struct PCIResourceRange *bar0; /* Legacy: I/O BAR; Modern: may be memory BAR */
     struct PCIResourceRange *bar4; /* MMIO BAR (unused in legacy) */
@@ -99,27 +78,6 @@ struct VirtIOSCSIBase
     struct Interrupt irq_handler;   /* Interrupt server node */
     uint32          irq_number;     /* Vector from MapInterrupt() */
     BOOL            irq_installed;  /* TRUE if handler is active */
-
-    /* Phase 9: VirtIO SCSI event queue (VQ1) — HOTPLUG + PARAM_CHANGE.
-     * Allocated/populated in InitEventQueue() when HOTPLUG or CHANGE is
-     * negotiated.  Event buffers are posted on init and re-posted after
-     * the event task consumes them. */
-#define VIRTIO_SCSI_EVENT_BUFS 8
-    BOOL             events_enabled;                 /* HOTPLUG || CHANGE negotiated */
-    uint8           *event_pool;                     /* flat MEMF_SHARED pool, N*sizeof(event) */
-    uint32           event_pool_size;                /* bytes */
-    uint32           event_pool_phys;                /* DMA-mapped physical base */
-    struct DMAEntry *event_pool_dma_list;
-    uint32           event_pool_dma_entries;
-    struct Task     *event_task;                     /* Event consumer task */
-    uint32           event_signal_mask;              /* Signal the ISR fires */
-    uint8            event_signal_bit;               /* Bit allocated by event_task */
-    BOOL             event_task_shutdown;            /* Set to request task exit */
-
-    /* Cross-task shutdown handshake: the caller of ShutdownEventQueue owns
-     * event_exit_task + event_exit_mask; the worker signals it on exit. */
-    struct Task     *event_exit_task;
-    uint32           event_exit_mask;
 };
 
 struct VirtIOUSCSIDevUnit
@@ -154,24 +112,13 @@ struct VirtIOUSCSIDevUnit
     struct IOStdReq *changeint_req; /* Held TD_ADDCHANGEINT IORequest */
     struct IOStdReq *remove_req;    /* Held TD_REMOVE IORequest */
 
-    /* Phase 10: media change tracking (CD insert/eject, capacity change).
-     * change_count is reported by TD_CHANGENUM and incremented on every
-     * event that alters media state.  media_present tells TD_CHANGESTATE
-     * whether a disk is inserted (0 = present, 1 = no disk). */
+    /* Media-state fields used by TD_CHANGENUM and TD_CHANGESTATE.
+     * Static after DiscoverUnits: change_count stays 0 and media_present
+     * stays TRUE for every unit (runtime media change is not supported). */
     uint32 change_count;
     BOOL   media_present;
 
-    /*
-     * Phase 10: mounter announcement state.
-     * TRUE once IMounter->AnnounceDeviceTags() has successfully handed the
-     * unit over to mounter.library.  Once TRUE, the driver MUST call
-     * DenounceDevice() before freeing the unit or on hot-removal — failing
-     * to do so leaves stale DOSNodes and a dangling reference in mounter.
-     * Only set by AnnounceIfHotAdded(); only cleared by DenounceIfAnnounced().
-     */
-    BOOL   announced;
-
-    /* Phase 6: Async I/O — unit device task */
+    /* Phase 6: Async I/O -- unit device task */
     struct Task    *task;           /* Unit device task (NULL if not running) */
     struct MsgPort *io_port;        /* Incoming IORequest queue */
     uint32          io_port_mask;   /* Precomputed 1 << io_port->mp_SigBit */

@@ -525,8 +525,7 @@ BOOL UnitTask_Start(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit *u
     libBase->IUtility->SNPrintf(unit->task_name, sizeof(unit->task_name),
                                 "virtioscsi unit %lu", unit->unit_num);
 
-    /* Pass the start message via AT_Param1 -- no Forbid/Permit needed.
-     * This is the same pattern the event task uses (virtio_events.c). */
+    /* Pass the start message via AT_Param1 -- no Forbid/Permit needed. */
     struct Task *task = IExec->CreateTaskTags(unit->task_name, 5,
                                               UnitTask_Entry, 16384,
                                               AT_Param1, (uint32)&startMsg,
@@ -573,9 +572,9 @@ void UnitTask_Shutdown(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit
 
     DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Shutdown: stopping unit %lu task\n", unit->unit_num);
 
-    /* Signal-based exit handshake (same pattern as ShutdownEventQueue).
-     * Allocate a signal bit in THIS task's context; the unit task signals
-     * us on exit.  Avoids deprecated Forbid/Permit busy-wait. */
+    /* Signal-based exit handshake: allocate a signal bit in THIS task's
+     * context; the unit task signals us on exit. Avoids deprecated
+     * Forbid/Permit busy-wait. */
     int8 bit = IExec->AllocSignal(-1);
     uint32 mask = (bit >= 0) ? (1UL << bit) : 0;
 

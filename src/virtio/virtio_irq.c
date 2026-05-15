@@ -72,14 +72,6 @@ static uint32 VirtIOSCSI_InterruptHandler(struct ExceptionContext *ctx, struct E
             if (unit && unit->io_wait_task)
                 IExec->Signal(unit->io_wait_task, unit->io_signal_mask);
         }
-
-        /* Wake the event consumer task if one is active.  The event task
-         * drains VQ1 (eventq), so any used-ring advance there means a new
-         * HOTPLUG / PARAM_CHANGE arrived for it to process.  Spurious wakes
-         * are harmless -- the task calls GetBuf which returns NULL in that
-         * case and goes back to Wait. */
-        if (base->events_enabled && base->event_task)
-            IExec->Signal(base->event_task, base->event_signal_mask);
     }
 
     return 1; /* Interrupt claimed */
