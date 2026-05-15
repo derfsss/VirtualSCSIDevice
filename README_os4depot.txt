@@ -81,9 +81,7 @@ FEATURES
 - Bounce buffer ring for zero-overhead small I/O
 - Interrupt coalescing via used_event batching
 - VIRTIO_F_INDIRECT_DESC for one-descriptor scatter-gather chains
-- Hot-plug (device_add / device_del) and CD media change
-  (eject / change) handled at runtime via the VirtIO event queue
-- SFS 1.290 / FFS2 / CDFileSystem all mount and remount cleanly
+- SFS 1.290 / FFS2 / CDFileSystem all mount cleanly
 - SandboxVM (X5000 host) compatibility via SBV_AVT_HostDMA tagging
 - No deprecated AmigaOS APIs used (no Forbid/Permit, no CachePreDMA)
 
@@ -186,7 +184,6 @@ v1.10 (17.04.2026)
   - Makefile dual-build: separate release (stripped) and debug (with
     DPRINTF + symbols) targets built in parallel.
   - Stress suite updated: accepts --port, --monitor, --volume CLI args.
-    Hot-plug tests skip gracefully when QEMU occupies all targets.
     Shell-run test checks serial log for diagnostic. 9P tier detects
     already-mounted SHARED:.
   - SandboxVM compatibility (X5000 host): every AllocVecTags whose
@@ -210,21 +207,9 @@ v1.9 (15.04.2026)
   - VIRTIO_RING_F_INDIRECT_DESC accepted on modern path: scatter-gather
     chains consume one vring descriptor regardless of SG count. Fixed
     byte-swap bugs in the indirect-table writes.
-  - VIRTIO_SCSI_F_HOTPLUG / F_CHANGE accepted: event queue (VQ1) now
-    carries async device events. A consumer task drains events and
-    handles TRANSPORT_RESET (rescan/removed), PARAM_CHANGE (media or
-    size change), and ASYNC_NOTIFY.
-  - CD / DVD media change: PARAM_CHANGE events with ASC 0x28 (medium
-    inserted) or 0x3A (medium not present) bump the per-unit change
-    counter, toggle media_present, invalidate cached geometry, and wake
-    any held TD_ADDCHANGEINT. TD_CHANGENUM and TD_CHANGESTATE now report
-    real values. Use (qemu) eject/change scsi0-0-0-0 to swap CDs live.
-  - Phase 10 mounter integration: hot-added disks (device_add scsi-hd
-    in QEMU monitor) are announced to mounter.library, so the disk
-    appears on the Workbench without a reboot. Removal (device_del)
-    triggers DenounceDevice. mounter is opened lazily on first hot-add
-    (never at boot, to avoid the old MediaToolbox crash) and closed in
-    Expunge after denouncing any remaining units. Non-fatal if mounter
+  - mounter.library integration: the driver opens mounter.library
+    lazily and uses it to clean up DOSNodes at Expunge. mounter is
+    closed after denouncing any remaining units. Non-fatal if mounter
     is unavailable -- units stay reachable via OpenDevice.
   - Shell-run diagnostic: _start() now prints an error via
     IExec->DebugPrintF and returns RETURN_FAIL (20) instead of 0.

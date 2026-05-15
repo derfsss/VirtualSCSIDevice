@@ -162,7 +162,7 @@ Thorough investigation revealed that the two supported QEMU PPC machines have fu
 - Capabilities: NOTIFY_CFG (BAR4+0x3000), DEVICE_CFG (BAR4+0x2000), ISR_CFG (BAR4+0x1000), COMMON_CFG (BAR4+0x0)
 - MMIO access via `stwbrx`/`lwbrx` (LE byte-reversed load/store) — canonical AmigaOS 4.1 PPC MMIO pattern
 - Status handshake: 0x00 → 0x03 (ACK+DRIVER) → 0x0B (FEATURES_OK) → 0x0F (DRIVER_OK)
-- Device features decoded: `0x30000006`/`0x00000101` = INDIRECT_DESC + EVENT_IDX + HOTPLUG + CHANGE + VERSION_1 + RING_RESET
+- Device features decoded: `0x30000006`/`0x00000101` = INDIRECT_DESC + EVENT_IDX + VERSION_1 + RING_RESET (HOTPLUG/CHANGE bits advertised by QEMU but not negotiated; event-queue consumer is currently dormant)
 - `num_queues = 3` readable from device config
 - Note: `VIRTIO_SCSI_F_INOUT` (bit 0) not advertised by QEMU — per spec 5.6.6.1.1 this limits commands to unidirectional only (no simultaneous IN+OUT buffers)
 
@@ -478,12 +478,22 @@ Added DPRINTF to all silent error paths across command handlers:
 - `Makefile` — BUILD_DATE/BUILD_TIME via date command
 - `README.md`, `README_os4depot.txt` — boot drive installation instructions, diskboot.config, v53.8 changelog
 
-## v1.9 Modern MMIO on AmigaOne, Hot-Plug, CD Media Change (April 2026)
+## v1.9 Modern MMIO on AmigaOne (April 2026)
 
 After v53.8 the display version was renumbered back to 1.x (boot-drive
 support is a matter of resident priority + `diskboot.config`, not a
 major-version concern). `lib_Version` stays at 53 in the Resident
 struct so OpenDevice and the OS4 filesystems still accept the driver.
+
+> **Status note:** v1.9 originally also shipped a VirtIO event-queue
+> consumer that handled runtime device add/remove and CD media change
+> events. That code path is currently disabled (`InitEventQueue` is
+> commented out in `src/Init.c` pending resolution of an SFS 1.290
+> interaction); the supporting modules `src/virtio/virtio_events.c`
+> and `src/virtio/virtio_mounter.c` remain in the tree but are
+> dormant. The detailed write-up below is preserved for reference;
+> end-user documentation has been scrubbed to not advertise these
+> features.
 
 ### Modern VirtIO MMIO on AmigaOne
 
@@ -493,7 +503,7 @@ struct so OpenDevice and the OS4 filesystems still accept the driver.
   doesn't program the high DWORD, and AmigaOS's later PCI enumerator
   performs a sizing probe (write `0xFFFFFFFF`, read size, write
   address back) but leaves the high DWORD at the probe value. Net
-  effect: BAR4 landed at `0xFFFFFFFF84204000` — outside Articia S's
+  effect: BAR4 landed at `0xFFFFFFFF84204000` -- outside Articia S's
   decoded PCI memory window, so MMIO reads returned `0xFF` and writes
   were silently dropped.
 - Fix: read BAR5 (config offset `0x24`) at discovery; if it's
@@ -502,7 +512,7 @@ struct so OpenDevice and the OS4 filesystems still accept the driver.
   `info mtree` compared across Pegasos2 (VOF programs BAR5=0),
   SAM460ex (VOF programs BAR5=0), and AmigaOne (no firmware before
   BBoot).
-- Result: AmigaOne now runs modern MMIO (≈10–20× faster than legacy
+- Result: AmigaOne now runs modern MMIO (~10-20x faster than legacy
   port I/O on Pegasos2 baselines). Legacy I/O remains the automatic
   fallback when the MMIO probe fails for any reason.
 
@@ -516,47 +526,29 @@ struct so OpenDevice and the OS4 filesystems still accept the driver.
   negotiated endianness, free-list `next` captured before overwrite,
   NEXT chaining added between table entries.
 - INDIRECT_DESC disabled on the legacy I/O path (QEMU reads indirect
-  entries as LE while PPC writes native BE) and on VQ1 (eventq buffers
-  are single-region so indirection is wasted descriptor pressure).
-- **VIRTIO_SCSI_F_HOTPLUG / F_CHANGE** (bits 1, 2) negotiated. VQ1
-  (eventq) now carries asynchronous device events.
+  entries as LE while PPC writes native BE) and on VQ1 (single-region
+  buffers).
 
-### Event queue consumer
+### Dormant: event-queue consumer (currently disabled)
 
-- Dedicated consumer task at priority 20 drains VQ1 on ISR signal,
-  parses events, and re-posts buffers. `libBase` passed via
-  `AT_Param1` on `CreateTaskTags` instead of `tc_UserData`.
-- `VIRTIO_SCSI_T_TRANSPORT_RESET` with reason `RESCAN` INQUIRY-probes
-  a new target/LUN, allocates a unit in the first free `units[]` slot,
-  initialises `dev_Unit`, and announces to `mounter.library`.
-- `VIRTIO_SCSI_T_TRANSPORT_RESET` with reason `REMOVED` marks the
-  unit's media as not present, wakes any held `TD_ADDCHANGEINT`,
-  and calls `DenounceDevice` so mounter tears down the DOSNode. The
-  unit slot stays allocated so a subsequent `RESCAN` on the same
-  target/LUN re-uses the same unit number (AmigaOS DOSNode lifetime
-  rule).
-- `VIRTIO_SCSI_T_PARAM_CHANGE` with ASC `0x28` (medium may have
-  changed) / `0x3A` (medium not present) bumps the per-unit
-  `change_count`, toggles `media_present`, invalidates cached
-  geometry, and replies to any held `TD_ADDCHANGEINT` so
-  `CDFileSystem` (or whichever filesystem holds it) wakes up and
-  re-mounts. Full round-trip verified with `(qemu) eject`/`change`.
+Implementation kept in `src/virtio/virtio_events.c`. The work was:
+asynchronous device-event consumer task draining VQ1, handling
+`VIRTIO_SCSI_T_TRANSPORT_RESET` (`RESCAN`/`REMOVED`) and
+`VIRTIO_SCSI_T_PARAM_CHANGE` (medium inserted/removed) to do live
+unit add/remove and CD media-change handling without a reboot.
+Disabled by commenting out the `InitEventQueue()` call in `Init.c`
+pending resolution of an SFS 1.290 mount interaction observed during
+v53.8 -> v1.10 troubleshooting.
 
-### Mounter integration for hot-added disks
+### Dormant: hot-add mounter integration (currently disabled)
 
-- New module `src/virtio/virtio_mounter.c` owns the
-  `mounter.library` handle with lazy open (first hot-add only, never
-  at boot — opening mounter at priority 0 during Init caused
-  `ramlib.support` DSI crashes via the v53.8 era).
-- Per-unit `announced` flag tracks ownership. `_manager_Expunge`
-  walks all units and denounces anything still announced before
-  dropping the interface and closing the library.
-- DOS-name prefix hint `VSCSI` passed via `MNTA_DosNamePrefixHint`,
-  so hot-added disks appear as `VSCSI<n>:` on the Workbench (or
-  with their RDB volume name if they have one).
-- Non-fatal if `mounter.library` is unavailable: units remain
-  reachable via `OpenDevice("virtioscsi.device", N, ...)`, only the
-  auto-mount step is skipped.
+Implementation kept in `src/virtio/virtio_mounter.c`. Lazy-open
+mounter.library, `AnnounceDeviceTags` with DOS-name prefix hint
+`VSCSI`, `DenounceDevice` on removal, cleanup pass in
+`_manager_Expunge`. Only fires when the event-queue consumer above
+is active, so dormant for the same reason. The `Expunge`-time
+denounce loop is still wired (`virtio_mounter.c:CleanupMounter`)
+to clean up any state left from previous activations.
 
 ### Stability
 
@@ -593,7 +585,7 @@ struct so OpenDevice and the OS4 filesystems still accept the driver.
   integrity + throughput (SHA round-trips, library-tree copy,
   100-iteration loop), Tier 2 redesigned deterministic concurrency
   (three parallel on-volume copies polled to completion), Tier 3
-  hot-plug + double-Open regression guards, Tier 4 baseline-normalised
+  double-Open regression guards, Tier 4 baseline-normalised
   memory-leak watch (run the same workload on `SYS:` first, then on
   SCSI:, compare drift; pass = SCSI extra drift < 2 MB AND tail rate
   ≤ 3× IDE baseline). Tier 5 v1.9-release-specific checks plus 9P
@@ -603,11 +595,13 @@ struct so OpenDevice and the OS4 filesystems still accept the driver.
 
 - `src/pci/pci_discovery.c` — BAR5 high-DWORD fix-up before
   `GetResourceRange(4)`
-- `src/virtio/virtio_events.c` — new event-queue consumer task
-- `src/virtio/virtio_mounter.c` — new module: lazy
-  `mounter.library` integration
-- `src/virtio/virtio_init.c` — INDIRECT_DESC + HOTPLUG/CHANGE
-  feature bits accepted on modern path
+- `src/virtio/virtio_events.c` — event-queue consumer task
+  (dormant: `InitEventQueue()` call commented out in `Init.c`)
+- `src/virtio/virtio_mounter.c` — lazy `mounter.library`
+  integration (dormant: only invoked from event-queue path; the
+  Expunge denounce-all sweep remains active for cleanup)
+- `src/virtio/virtio_init.c` — INDIRECT_DESC feature bit accepted
+  on modern path
 - `src/Expunge.c` — denounce-all-announced cleanup pass
 - `include/version.h` — display version `1.9`, lib_Version pinned
   at 53
@@ -639,10 +633,11 @@ partition after the v53.8 → 1.x renumber. Root-cause sweep:
   reported type. SFS doesn't care that the disk isn't an actual
   floppy, only that the type matches a known disk-driver value.
 - `dev_Unit` must be initialised with `NT_MSGPORT` + `UNITF_ACTIVE`:
-  factored out as `init_dev_unit()` and called from both
-  `DiscoverUnits` (boot scan) and `probe_and_add` (hot-add path).
-  The latter was previously leaving `ln_Type=0`, which is what made
-  hot-added units fail to mount specifically with SFS.
+  factored out as `init_dev_unit()` so the boot-scan path
+  (`DiscoverUnits`) and the (currently dormant) runtime-add path
+  (`probe_and_add`) share identical initialisation. Prior to the
+  factor-out the latter left `ln_Type=0`, which is what made
+  runtime-added units fail to mount specifically under SFS.
 
 After this sweep, SFS 1.290, FFS2, and CDFileSystem all mount
 virtio-scsi partitions across the full QEMU machine matrix.
@@ -749,7 +744,8 @@ binaries inside the 53.54 install CD, U1, U2, and U3 archives.
   `CLT_Vector68K` + `CLT_NoLegacyIFace` added to library tags
 - `src/Init.c` — `expansion.library` minimum v53,
   `init_dev_unit()` helper called for boot scan
-- `src/unit_discovery.c` — `init_dev_unit()` shared with hot-add
+- `src/unit_discovery.c` — `init_dev_unit()` shared between boot
+  scan and the dormant runtime-add path
 - `src/exec_cmds/cmd_td_getgeometry.c` —
   `ensure_rdb_geometry_cached()` plus full zero of `DriveGeometry`,
   `dg_BufMemType`, `TD_GETDRIVETYPE` returns `DRIVE3_5`
