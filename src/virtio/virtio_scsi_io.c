@@ -511,8 +511,23 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
                     cookie, written, poll_timeout);
         }
 
-        /* Always release the data DMA mapping for this attempt */
-        cleanup_dma(IExec, &db_data);
+        /* Release the data DMA mapping for this attempt.
+         *
+         * IMPORTANT on timeout (cookie == NULL): the request descriptor is
+         * STILL in the VirtIO ring's avail/desc tables. The device may yet
+         * complete it (interrupt was dropped / device was slow). Releasing
+         * the data DMA mapping here means a late completion would write
+         * into an unmapped buffer -- but for unit-path callers the data
+         * buffer is in user space (StartDMA on user io_Data) so 'leaking'
+         * the mapping is also wrong. Compromise: release for the non-
+         * timeout case; on timeout, only release for unit-path callers
+         * (their req_cmd lives in the unit struct and the descriptor still
+         * points at LIVE memory, so late completion is harmless to the
+         * cookie; the user data buffer is the unit's responsibility).
+         * For the temp_alloc path see the discovery-timeout block below. */
+        if (cookie || !temp_alloc) {
+            cleanup_dma(IExec, &db_data);
+        }
 
         if (!cookie) {
             DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] DoIO: TIMEOUT\n");
@@ -549,12 +564,37 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
         break;
     }
 
-    /* Discovery path: free temporary DMA mappings and buffers */
-    if (temp_alloc) {
+    /* Discovery path cleanup: free temporary DMA mappings and buffers.
+     *
+     * BUT on a timeout (result == IOERR_SELFTEST and we never picked up our
+     * cookie), the descriptor we placed in the VirtIO ring still points at
+     * req_cmd / resp_cmd. If the device later completes (e.g. it was just
+     * slow), it would write into freed memory and Harvest would receive a
+     * dangling cookie -- a use-after-free.
+     *
+     * Discovery DoIO timing out is pathological: the device failed to ack
+     * an INQUIRY / similar within 50 ISR wakes. The driver is essentially
+     * unusable past this point. Intentionally LEAK these buffers and the
+     * data DMA mapping so a late completion writes into still-mapped
+     * memory rather than freed memory. The leak is bounded (one set per
+     * discovery probe), and freeing the device would require a full
+     * device reset to clear the descriptor first, which is too invasive
+     * to do here. The driver will fail Init() and the OS will discard us.
+     */
+    /* result == IOERR_SELFTEST is the unique timeout signal set above on
+     * the !cookie path; any other result means the device responded (with
+     * success, SCSI error, or VirtIO error) and the descriptor is no
+     * longer referenced by hardware -- safe to free. */
+    if (temp_alloc && result != IOERR_SELFTEST) {
         cleanup_dma(IExec, &db_resp_tmp);
         cleanup_dma(IExec, &db_req_tmp);
         IExec->FreeVec(resp_cmd);
         IExec->FreeVec(req_cmd);
+    } else if (temp_alloc) {
+        DPRINTF(IExec,
+                "[virtioscsi:virtio_scsi_io.c] DoIO: discovery TIMEOUT - intentionally leaking "
+                "req_cmd %p / resp_cmd %p / data DMA to avoid UAF if device completes late\n",
+                (void *)req_cmd, (void *)resp_cmd);
     }
 
     /* Clear active-units mask bit if this unit has no pipeline inflight work.
