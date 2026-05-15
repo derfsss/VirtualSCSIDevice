@@ -37,6 +37,16 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
      */
     case TD_ADDCHANGEINT:
         if (unit) {
+            /* A second TD_ADDCHANGEINT without an intervening TD_REMCHANGEINT
+             * is a caller bug, but tolerate it: reply the previous request
+             * with IOERR_ABORTED so its caller wakes, then store the new one.
+             * Silent overwrite would orphan the prior IORequest. */
+            if (unit->changeint_req) {
+                DPRINTF(IExec, "[virtioscsi:BeginIO.c] TD_ADDCHANGEINT: replacing held req on T%lu L%lu\n",
+                        unit->target_id, unit->lun_id);
+                unit->changeint_req->io_Error = IOERR_ABORTED;
+                IExec->ReplyMsg((struct Message *)unit->changeint_req);
+            }
             unit->changeint_req = ioreq;
             DPRINTF(IExec, "[virtioscsi:BeginIO.c] TD_ADDCHANGEINT: Holding request for T%lu L%lu\n",
                     unit->target_id, unit->lun_id);
@@ -46,6 +56,13 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
 
     case TD_REMOVE:
         if (unit) {
+            /* Same reject-or-replace semantics as TD_ADDCHANGEINT. */
+            if (unit->remove_req) {
+                DPRINTF(IExec, "[virtioscsi:BeginIO.c] TD_REMOVE: replacing held req on T%lu L%lu\n",
+                        unit->target_id, unit->lun_id);
+                unit->remove_req->io_Error = IOERR_ABORTED;
+                IExec->ReplyMsg((struct Message *)unit->remove_req);
+            }
             unit->remove_req = ioreq;
             DPRINTF(IExec, "[virtioscsi:BeginIO.c] TD_REMOVE: Holding request for T%lu L%lu\n",
                     unit->target_id, unit->lun_id);
@@ -304,8 +321,36 @@ LONG _manager_AbortIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
     if (found) {
         ioreq->io_Error = IOERR_ABORTED;
         IExec->ReplyMsg((struct Message *)ioreq);
-        return 0; /* Success — request aborted */
+        return 0; /* Success: request aborted */
     }
 
     return IOERR_NOCMD; /* Request not found in queue (already executing) */
+}
+
+/*
+ * Reply and clear any held async TD_ADDCHANGEINT / TD_REMOVE on a unit.
+ * Used by:
+ *  - UnitTask_Entry shutdown drain (error_code = IOERR_ABORTED)
+ *  - Expunge per-unit cleanup    (error_code = IOERR_ABORTED)
+ *  - RESET_REMOVED for the remove_req (error_code = 0, the handshake)
+ *
+ * Both fields are NULLed after replying so a second call is a no-op.
+ */
+void Reply_Held_Async_Reqs(struct ExecIFace *IExec,
+                           struct VirtIOUSCSIDevUnit *unit,
+                           int8 error_code)
+{
+    if (!unit) return;
+
+    if (unit->changeint_req) {
+        unit->changeint_req->io_Error = error_code;
+        IExec->ReplyMsg((struct Message *)unit->changeint_req);
+        unit->changeint_req = NULL;
+    }
+
+    if (unit->remove_req) {
+        unit->remove_req->io_Error = error_code;
+        IExec->ReplyMsg((struct Message *)unit->remove_req);
+        unit->remove_req = NULL;
+    }
 }

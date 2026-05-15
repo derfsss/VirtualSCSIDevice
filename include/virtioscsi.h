@@ -304,6 +304,21 @@ uint32 _manager_Obtain(struct DeviceManagerInterface *Self);
 uint32 _manager_Release(struct DeviceManagerInterface *Self);
 
 /*
+ * Reply and clear any held asynchronous TD_ADDCHANGEINT / TD_REMOVE
+ * IORequest on a unit. Both fields are set NULL after replying.
+ *
+ * error_code: 0 for "normal" completion (e.g. RESET_REMOVED completing
+ * a TD_REMOVE handshake), IOERR_ABORTED for teardown/shutdown where the
+ * caller's wait is being broken rather than satisfied.
+ *
+ * Safe to call with unit == NULL (no-op). Safe to call when neither
+ * field is set (no-op).
+ */
+void Reply_Held_Async_Reqs(struct ExecIFace *IExec,
+                           struct VirtIOUSCSIDevUnit *unit,
+                           int8 error_code);
+
+/*
  * Debugging macro.
  * Define DEBUG and DEBUG_VERBOSE for additional output.
  */

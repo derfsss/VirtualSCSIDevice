@@ -44,6 +44,13 @@ BPTR _manager_Expunge(struct DeviceManagerInterface *Self)
                 DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Shutting down unit %d task.\n", i);
                 /* Ensure unit task is stopped before freeing (handles forced expunge) */
                 UnitTask_Shutdown(devBase, devBase->units[i]);
+                /* Defense in depth: UnitTask_Entry's drain handles held async
+                 * requests in the normal shutdown path, but for hot-added units
+                 * that never had a task start (no opener arrived) UnitTask_Shutdown
+                 * is a no-op. A held req on such a unit is impossible by
+                 * construction (BeginIO needs io_port which the task creates),
+                 * but the call is a safe no-op when both fields are NULL. */
+                Reply_Held_Async_Reqs(IExec, devBase->units[i], IOERR_ABORTED);
                 IExec->FreeVec(devBase->units[i]);
                 devBase->units[i] = NULL;
                 DPRINTF(IExec, "[virtioscsi:Expunge.c] Expunge: Unit %d freed.\n", i);

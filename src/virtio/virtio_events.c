@@ -269,10 +269,23 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
         case VIRTIO_SCSI_EVT_RESET_REMOVED: {
             int32 slot = find_unit_slot(libBase, target, lun);
             if (slot >= 0) {
-                DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_REMOVED T%lu L%lu — unit %ld, medium ejected\n",
+                DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_REMOVED T%lu L%lu: unit %ld, medium ejected\n",
                         target, lun, slot);
                 struct VirtIOUSCSIDevUnit *unit = libBase->units[slot];
                 notify_media_change(libBase, unit, FALSE);
+                /* TD_REMOVE handshake: a held TD_REMOVE request means a caller
+                 * is waiting for "the device went away" notification. This
+                 * RESET_REMOVED is exactly that event, so reply success (0)
+                 * rather than IOERR_ABORTED. changeint_req was already replied
+                 * by notify_media_change above, so this only acts on remove_req
+                 * (changeint_req is now NULL). */
+                if (unit && unit->remove_req) {
+                    DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_REMOVED: replying held TD_REMOVE on T%lu L%lu\n",
+                            target, lun);
+                    unit->remove_req->io_Error = 0;
+                    IExec->ReplyMsg((struct Message *)unit->remove_req);
+                    unit->remove_req = NULL;
+                }
                 /* Keep the unit slot allocated so filesystems can still issue
                  * TD_CHANGESTATE and get the "no disk" answer.  A fresh
                  * RESET_RESCAN on the same T/L will flip media_present back.
@@ -284,13 +297,13 @@ static void handle_event(struct VirtIOSCSIBase *libBase, const struct virtio_scs
                 DenounceIfAnnounced(libBase, unit);
                 libBase->active_units_mask &= ~(1U << slot);
             } else {
-                DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_REMOVED T%lu L%lu — no matching unit\n",
+                DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_REMOVED T%lu L%lu: no matching unit\n",
                         target, lun);
             }
             break;
         }
         case VIRTIO_SCSI_EVT_RESET_HARD:
-            DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_HARD — device-wide reset reported\n");
+            DPRINTF(IExec, "[virtioscsi:virtio_events.c] RESET_HARD: device-wide reset reported\n");
             /* Every unit sees a media change; wake all pending changeints. */
             for (int32 i = 0; i < 8; i++) {
                 struct VirtIOUSCSIDevUnit *u = libBase->units[i];

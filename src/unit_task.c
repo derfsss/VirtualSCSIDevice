@@ -450,6 +450,12 @@ static void UnitTask_Entry(struct UnitTaskStartMsg *startMsg)
         }
     }
 
+    /* Wake any caller blocked in TD_ADDCHANGEINT / TD_REMOVE on this unit.
+     * These IORequests are held in unit fields rather than the io_port queue,
+     * so the drain loop above does NOT see them. Without this they would
+     * orphan their caller (typically a filesystem handler) forever. */
+    Reply_Held_Async_Reqs(IExec, unit, IOERR_ABORTED);
+
     /* Remove ISR registration */
     unit->io_wait_task   = NULL;
     unit->io_cookie      = NULL;
