@@ -52,16 +52,13 @@ void Handle_NS_DeviceQuery(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
 void Handle_NS_TD_GetGeometry64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
 void Handle_NS_TD_IO64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
 
-/* Exec Handlers */
-void Handle_CMD_Read(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
-void Handle_CMD_Write(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
+/* Exec Handlers.
+ * Block I/O (CMD_READ/WRITE, TD_*64, NSCMD_TD_*64) has no Handle_* entry:
+ * it is submitted through the inflight pipeline by unit_task.c's
+ * submit_block_io(). */
 void Handle_CMD_Success(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
 void Handle_CMD_Update(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
 void Handle_TD_GetGeometry(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
-void Handle_TD_GetDriveType(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
 void Handle_TD_GetNumTracks(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
-void Handle_TD_ChangeState(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
-void Handle_TD_ProtStatus(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
-void Handle_TD_IO64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req);
 
 #endif /* VIRTIO_SCSI_CMDS_H */

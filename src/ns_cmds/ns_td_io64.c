@@ -36,8 +36,9 @@ void Handle_NS_TD_IO64(struct VirtIOSCSIBase *libBase, struct IOStdReq *req)
     uint32 residual = 0;
     int32 rc;
 
-    if (lba > 0xFFFFFFFFULL) {
-        /* Disk > 2TB: use READ(16)/WRITE(16) with 64-bit LBA */
+    /* READ(16)/WRITE(16) when the LBA exceeds 32 bits OR the transfer
+     * length exceeds READ(10)/WRITE(10)'s 16-bit block-count field. */
+    if (lba > 0xFFFFFFFFULL || blocks > 0xFFFF) {
         uint8 cdb[16];
         if (is_write)
             make_write16_cdb(cdb, lba, blocks);

@@ -36,7 +36,16 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
      * These are handled inline and never queued.
      */
     case TD_ADDCHANGEINT:
-        if (unit) {
+        if (!unit) {
+            /* No unit: holding is impossible and not replying would orphan
+             * the caller forever.  Fail it like any other unit-less command. */
+            ioreq->io_Error = IOERR_OPENFAIL;
+            if (ioreq->io_Flags & IOF_QUICK)
+                return;
+            IExec->ReplyMsg((struct Message *)ioreq);
+            return;
+        }
+        {
             /* A second TD_ADDCHANGEINT without an intervening TD_REMCHANGEINT
              * is a caller bug, but tolerate it: reply the previous request
              * with IOERR_ABORTED so its caller wakes, then store the new one.
@@ -55,7 +64,14 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         return; /* Do NOT reply */
 
     case TD_REMOVE:
-        if (unit) {
+        if (!unit) {
+            ioreq->io_Error = IOERR_OPENFAIL;
+            if (ioreq->io_Flags & IOF_QUICK)
+                return;
+            IExec->ReplyMsg((struct Message *)ioreq);
+            return;
+        }
+        {
             /* Same reject-or-replace semantics as TD_ADDCHANGEINT. */
             if (unit->remove_req) {
                 DPRINTF(IExec, "[virtioscsi:BeginIO.c] TD_REMOVE: replacing held req on T%lu L%lu\n",
@@ -172,13 +188,8 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
         IExec->ReplyMsg((struct Message *)ioreq);
         return;
 
-    case TD_GETNUMTRACKS:
-        ioreq->io_Actual = 0;
-        ioreq->io_Error = 0;
-        if (ioreq->io_Flags & IOF_QUICK)
-            return;
-        IExec->ReplyMsg((struct Message *)ioreq);
-        return;
+    /* TD_GETNUMTRACKS is queued to the unit task (below): the handler may
+     * need to read block 0 (RDB probe) to report real cylinder counts. */
 
     case NSCMD_DEVICEQUERY:
         Parse_NS_Command(libBase, ioreq);
@@ -208,6 +219,7 @@ void _manager_BeginIO(struct DeviceManagerInterface *Self, struct IOStdReq *iore
     case ETD_UPDATE:
     case HD_SCSICMD:
     case TD_GETGEOMETRY:
+    case TD_GETNUMTRACKS:
     case TD_READ64:
     case TD_WRITE64:
     case TD_FORMAT64:

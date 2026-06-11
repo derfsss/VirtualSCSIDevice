@@ -21,10 +21,9 @@ TARGET = $(BUILD_DIR)/virtioscsi.device
 TARGET_DEBUG = $(BUILD_DIR)/virtioscsi.device.debug
 SRC = src/device.c src/Init.c src/Open.c src/Close.c src/Expunge.c src/BeginIO.c \
       src/scsi_cdb_helpers.c src/cmd_names.c src/unit_discovery.c src/unit_task.c \
-      src/exec_cmds/cmd_read.c src/exec_cmds/cmd_write.c \
       src/exec_cmds/cmd_stubs.c src/exec_cmds/cmd_td_getgeometry.c \
       src/exec_cmds/cmd_td_getnumtracks.c \
-      src/exec_cmds/cmd_update.c src/exec_cmds/cmd_td_io64.c \
+      src/exec_cmds/cmd_update.c \
       src/scsi_cmds/scsi_parse.c src/scsi_cmds/scsi_inquiry.c \
       src/scsi_cmds/scsi_read_capacity_10.c src/scsi_cmds/scsi_rw_10.c \
       src/scsi_cmds/scsi_test_unit_ready.c \

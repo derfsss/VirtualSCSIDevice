@@ -1,6 +1,6 @@
 virtioscsi.device - VirtIO SCSI Device Driver for AmigaOS 4.1 FE
 =================================================================
-Version 1.11 - 15 May 2026
+Version 1.12 - 11 June 2026
 
 
 INTRODUCTION
@@ -170,6 +170,31 @@ sessions where symbol addresses help decode DSI/grim-reaper reports.
 
 CHANGELOG
 ---------
+
+v1.12 (11.06.2026)
+  - Code review pass across all transport paths. Fixes:
+  - Single transfers larger than 32 MiB were silently truncated:
+    the pipeline path cast the block count into READ(10)/WRITE(10)'s
+    16-bit transfer-length field. Requests above 65535 blocks now
+    use READ(16)/WRITE(16) regardless of LBA.
+  - Modern-mode (VirtIO 1.0) endianness: the device-written
+    `residual` field is little-endian under VERSION_1 but was read
+    raw (harmless while zero; a real underrun would have produced a
+    garbage io_Actual). The interrupt-coalescing used_event write in
+    Harvest also missed its byte-swap, so the device could suppress
+    interrupts it should have delivered under pipeline load.
+  - Cross-task races on the inflight bookkeeping: occupancy counters
+    and the per-unit free list are now updated under io_lock (a
+    completion can be processed by a different unit's task; lost
+    updates inflated the counter the interrupt coalescing relies on).
+  - Device-supplied descriptor index bounds-checked in GetBuf.
+  - TD_ADDCHANGEINT/TD_REMOVE without a valid unit no longer orphan
+    the caller; they fail with IOERR_OPENFAIL.
+  - TD_GETNUMTRACKS now reports real cylinder counts (was 0).
+  - Dead code removed (synchronous CMD_READ/WRITE/TD_IO64 handlers
+    superseded by the pipeline since v1.3, unused stubs and fields).
+  - Validated on QEMU Pegasos2 (modern transport): full stress suite
+    passes (47/47 checks + inquiry/geometry markers).
 
 v1.11 (15.05.2026)
   - >2 TiB partitions now mount. TD_GETGEOMETRY's dg_TotalSectors

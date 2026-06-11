@@ -107,7 +107,6 @@ struct VirtIOUSCSIDevUnit
     uint32 rdb_phys_sectors;   /* rdb_Sectors      @ RDB offset 0x44 (BlocksPerTrack) */
     uint32 rdb_phys_heads;     /* rdb_Heads        @ RDB offset 0x48 (Surfaces) */
     BOOL   rdb_geometry_valid; /* TRUE if block 0 had a valid RDSK signature */
-    BOOL   rdb_geometry_checked; /* TRUE once the probe has run (success or fail) */
     /* Held change notification requests (must NOT be replied to until removed) */
     struct IOStdReq *changeint_req; /* Held TD_ADDCHANGEINT IORequest */
     struct IOStdReq *remove_req;    /* Held TD_REMOVE IORequest */
@@ -216,9 +215,6 @@ struct VirtIOUSCSIDevUnit
         /* Bounce-buffer path: set when data_len <= BOUNCE_BUF_SIZE */
         BOOL             using_bounce; /* TRUE = bounce_bufs[slot] used */
         BOOL             is_write;     /* TRUE = write, FALSE = read (for read-back) */
-        /* Decoded result for ReplyMsg (set by Harvest, read nowhere — ReplyMsg done inline) */
-        uint8            scsi_status;
-        uint32           residual;
     } inflight[MAX_INFLIGHT];
 
     /* Per-slot pre-allocated req/resp buffers with permanent DMA mappings.

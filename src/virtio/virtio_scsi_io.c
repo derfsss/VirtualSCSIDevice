@@ -130,12 +130,11 @@ static BOOL prepare_dma(struct ExecIFace *IExec, struct DMABuffer *db, APTR addr
  *     drains
  *   - ReplyMsg's the ioreq
  *
- * io_lock contract: caller must NOT hold io_lock. ReplyMsg can reschedule,
- * and we mutate libBase counters without taking the lock here (the same
- * pattern the original duplicated sites used). The counters are only
- * mutated from Harvest/DoIO paths which are themselves serialised by
- * io_lock around GetBuf, so by the time we reach this helper the lock
- * is released and the per-slot data is owned by this code path alone.
+ * io_lock contract: caller must NOT hold io_lock (ReplyMsg can
+ * reschedule).  The helper takes io_lock itself around the free-list
+ * and counter updates: a cross-unit completion runs in a DIFFERENT
+ * task from the owning unit's Submit, so both the free list and the
+ * occupancy counters need the same lock Submit uses.
  */
 static void complete_inflight_slot(struct ExecIFace *IExec,
                                    struct VirtIOSCSIBase *libBase,
@@ -144,6 +143,7 @@ static void complete_inflight_slot(struct ExecIFace *IExec,
 {
     struct IOStdReq *ioreq = target->inflight[slot].ioreq;
     struct virtio_scsi_resp_cmd *resp_cmd = target->resp_bufs[slot];
+    struct virtqueue *vq = libBase->vqs[2];
 
     ioreq->io_Error = map_scsi_error(resp_cmd->response, resp_cmd->status,
                                      resp_cmd->sense[2] & 0x0F);
@@ -154,7 +154,11 @@ static void complete_inflight_slot(struct ExecIFace *IExec,
                 (uint32)resp_cmd->response, (uint32)resp_cmd->status, (long)ioreq->io_Error);
         ioreq->io_Actual = 0;
     } else {
-        ioreq->io_Actual = ioreq->io_Length - resp_cmd->residual;
+        /* residual is device-written and little-endian in modern mode;
+         * clamp defensively so a bogus value can't yield a huge io_Actual. */
+        uint32 residual = virtio_scsi_resp_residual(vq->modern, resp_cmd);
+        ioreq->io_Actual = (residual > ioreq->io_Length)
+                           ? 0 : ioreq->io_Length - residual;
     }
 
     /* Bounce read-back: invalidate stale cache lines and copy device data
@@ -176,13 +180,21 @@ static void complete_inflight_slot(struct ExecIFace *IExec,
         target->inflight[slot].dma_num_entries = 0;
     }
 
-    /* Return slot to the unit's free list. */
+    /* Return the slot to the free list and decrement the occupancy
+     * counters under io_lock.  Submit increments these counters under
+     * io_lock and Harvest's coalescing logic READS occupied_count under
+     * io_lock -- but this helper runs after the caller released the lock
+     * (ReplyMsg can reschedule), and two unit tasks can complete slots
+     * concurrently.  An unlocked read-modify-write here loses updates,
+     * leaving occupied_count permanently inflated -- which makes the
+     * EVENT_IDX coalescing in Harvest program a used_event for
+     * completions that never come (missed interrupts, stalled I/O). */
+    IExec->ObtainSemaphore(&libBase->io_lock);
     target->inflight[slot].ioreq  = NULL;
     target->inflight[slot].cookie = NULL;
     target->inflight_next[slot] = target->free_head;
     target->free_head = slot;
 
-    /* Decrement counters and clear the unit's active-units bit when drained. */
     if (libBase->occupied_count > 0)
         libBase->occupied_count--;
     if (target->inflight_count > 0) {
@@ -190,6 +202,7 @@ static void complete_inflight_slot(struct ExecIFace *IExec,
         if (target->inflight_count == 0)
             libBase->active_units_mask &= ~(uint8)(1U << target->unit_num);
     }
+    IExec->ReleaseSemaphore(&libBase->io_lock);
 
     IExec->ReplyMsg((struct Message *)ioreq);
 }
@@ -595,8 +608,12 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
         } else {
             if (scsi_status_out)
                 *scsi_status_out = resp_cmd->status;
-            if (residual_out)
-                *residual_out = resp_cmd->residual;
+            if (residual_out) {
+                /* Clamp: callers compute io_Actual = data_len - residual,
+                 * so a bogus device value must never exceed data_len. */
+                uint32 residual = virtio_scsi_resp_residual(vq->modern, resp_cmd);
+                *residual_out = (residual > data_len) ? data_len : residual;
+            }
 
             if (resp_cmd->status == 2) { /* CHECK CONDITION */
                 DPRINTF(IExec, "[virtioscsi] DoIO: T%lu L%lu CHECK CONDITION (Tries left: %ld)\n",
@@ -664,6 +681,19 @@ int32 VirtIOSCSI_DoIO(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUnit 
     return result;
 }
 
+/* Push a slot back onto the unit's free list under io_lock.  Used by
+ * VirtIOSCSI_Submit's failure paths; the lock matches the pop at Submit
+ * entry and the push in complete_inflight_slot. */
+static void submit_release_slot(struct ExecIFace *IExec,
+                                struct VirtIOSCSIBase *libBase,
+                                struct VirtIOUSCSIDevUnit *unit, int32 slot)
+{
+    IExec->ObtainSemaphore(&libBase->io_lock);
+    unit->inflight_next[slot] = unit->free_head;
+    unit->free_head = slot;
+    IExec->ReleaseSemaphore(&libBase->io_lock);
+}
+
 /*
  * VirtIOSCSI_Submit: submit one block I/O request into a free inflight slot.
  *
@@ -682,12 +712,18 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
     struct ExecIFace *IExec = libBase->IExec;
     struct virtqueue *vq = libBase->vqs[2];
 
-    /* Find a free inflight slot -- O(1) via free list */
-    int32 slot = unit->free_head;
+    /* Find a free inflight slot -- O(1) via free list.  io_lock guards
+     * the pop: complete_inflight_slot can push a slot back onto THIS
+     * unit's free list from another unit's task (cross-unit inline
+     * harvest), so the list is not single-task-owned. */
     uint32 i;
+    IExec->ObtainSemaphore(&libBase->io_lock);
+    int32 slot = unit->free_head;
+    if (slot >= 0)
+        unit->free_head = unit->inflight_next[slot];
+    IExec->ReleaseSemaphore(&libBase->io_lock);
     if (slot < 0)
         return -1; /* No free slot */
-    unit->free_head = unit->inflight_next[slot];
 
     struct virtio_scsi_req_cmd  *req_cmd  = unit->req_bufs[slot];
     struct virtio_scsi_resp_cmd *resp_cmd = unit->resp_bufs[slot];
@@ -749,17 +785,14 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
         uint32 entries = IExec->StartDMA(data, data_len, dma_flags);
         if (entries == 0) {
             DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Submit: StartDMA failed slot=%ld\n", (long)slot);
-            /* Return slot to free list before failing */
-            unit->inflight_next[slot] = unit->free_head;
-            unit->free_head = slot;
+            submit_release_slot(IExec, libBase, unit, slot);
             return HFERR_DMA;
         }
         struct DMAEntry *dlist = unit->data_dma_pool[slot];
         if (!dlist || entries > MAX_SG_ENTRIES) {
-            /* Pool entry missing or too many entries -- fall back to alloc */
+            /* Pool entry missing or chain longer than the pre-allocated array */
             IExec->EndDMA(data, data_len, dma_flags | DMAF_NoModify);
-            unit->inflight_next[slot] = unit->free_head;
-            unit->free_head = slot;
+            submit_release_slot(IExec, libBase, unit, slot);
             return HFERR_DMA;
         }
         IExec->GetDMAList(data, data_len, dma_flags, dlist);
@@ -853,8 +886,7 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
             unit->inflight[slot].dma_list        = NULL;
             unit->inflight[slot].dma_num_entries = 0;
         }
-        unit->inflight_next[slot] = unit->free_head;
-        unit->free_head = slot;
+        submit_release_slot(IExec, libBase, unit, slot);
         return HFERR_DMA;
     }
 
@@ -877,8 +909,7 @@ int32 VirtIOSCSI_Submit(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
             unit->inflight[slot].dma_list        = NULL;
             unit->inflight[slot].dma_num_entries = 0;
         }
-        unit->inflight_next[slot] = unit->free_head;
-        unit->free_head = slot;
+        submit_release_slot(IExec, libBase, unit, slot);
         return TDERR_NotSpecified;
     }
     /* Slot successfully submitted -- update occupancy tracking */
@@ -1051,9 +1082,14 @@ void VirtIOSCSI_Harvest(struct VirtIOSCSIBase *libBase, struct VirtIOUSCSIDevUni
     if (vq->use_event_idx) {
         uint16 occupied = (uint16)libBase->occupied_count;
         if (occupied >= 2) {
-            /* Coalesce: fire after all occupied completions arrive */
+            /* Coalesce: fire after all occupied completions arrive.
+             * used_event is a vring field -- little-endian in modern mode
+             * (vr16), exactly like the baseline write in VirtQueue_GetBuf.
+             * Writing it raw here byte-swapped the threshold on the modern
+             * path, making the device suppress interrupts it should have
+             * delivered. */
             uint16 next_event = vq->last_used_idx + (uint16)(occupied - 1);
-            vq->avail->ring[vq->num] = next_event;
+            vq->avail->ring[vq->num] = vr16(vq->modern, next_event);
             __asm__ volatile("eieio" ::: "memory");
             DPRINTF(IExec, "[virtioscsi:virtio_scsi_io.c] Harvest: used_event=%u (occupied=%u, coalescing)\n",
                     (unsigned)next_event, (unsigned)occupied);

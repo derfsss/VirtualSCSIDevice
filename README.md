@@ -24,7 +24,7 @@ The driver auto-detects the best VirtIO transport for each QEMU machine type —
 - **Dual VirtIO transport** — Legacy PCI and Modern VirtIO 1.0, auto-detected at boot via MMIO probe. All three supported QEMU machines run the modern path; legacy is the automatic fallback if the MMIO probe fails. Same QEMU config works on every machine.
 - **Interrupt-driven I/O** — uses PCI INTx interrupts; no CPU-burning polling loops
 - **Async I/O** — per-unit exec task with message port; `BeginIO` returns immediately for slow commands
-- **Multi-disk** — discovers up to 8 SCSI targets at boot, each announced to `mounter.library`
+- **Multi-disk** — discovers up to 8 SCSI targets at boot; partitions get DOSNodes via `diskboot.kmod` (the standard AmigaOS disk-driver pattern)
 - **Automounting** — all discovered partitions mount automatically without manual configuration
 - **Full trackdisk command set** — `CMD_READ`, `CMD_WRITE`, `CMD_UPDATE`, `TD_GETGEOMETRY`, `TD_FORMAT`, `TD_READ64`, `TD_WRITE64`, NSD 64-bit commands, `HD_SCSICMD`, and more
 - **>2 TiB disk support** — two-step geometry discovery: READ CAPACITY (10) first; if last LBA == 0xFFFFFFFF, falls back to READ CAPACITY (16) for the 64-bit block count. `TD_GETGEOMETRY` reports a synthesised logical CHS where `dg_Cylinders * dg_CylSectors == total_blocks` exactly so callers that compute size from CHS see the full disk; `NSCMD_TD_GETGEOMETRY64` reports the unclamped 64-bit count via `struct DriveGeometry64`. (Single AmigaOS partitions remain limited to ~2 TiB by the RDB protocol's 32-bit cylinder fields; spread the disk across multiple partitions to use the full capacity.)
@@ -191,9 +191,9 @@ src/
   BeginIO.c             — I/O request dispatcher
   cmd_names.c           — command name table (shared by BeginIO and NSCMD_DEVICEQUERY)
   scsi_cdb_helpers.c    — CDB builders, geometry cache helper
-  unit_discovery.c      — SCSI INQUIRY scan, mounter.library announcement
+  unit_discovery.c      — SCSI INQUIRY scan, unit struct setup
   unit_task.c           — per-unit exec task, pre-allocated DMA buffers
-  exec_cmds/            — CMD_READ, CMD_WRITE, TD_GETGEOMETRY, TD_IO64, etc.
+  exec_cmds/            — TD_GETGEOMETRY, TD_GETNUMTRACKS, CMD_UPDATE handlers
   scsi_cmds/            — SCSI INQUIRY, READ CAPACITY, READ/WRITE(10), etc.
   ns_cmds/              — NSD NSCMD_DEVICEQUERY, NSCMD_TD_GETGEOMETRY64, etc.
   pci/                  — PCI bus enumeration, BAR mapping, modern cap detection
@@ -205,11 +205,23 @@ include/
 tests/
   test_virtioscsi.c     — stress test (concurrent I/O, geometry, 64-bit offsets)
   test_modern.c         — VirtIO 1.0 Modern device probe (Pegasos2 validation)
+  test_inquiry.c        — NSCMD_DEVICEQUERY / INQUIRY / READ CAPACITY smoke test
 ```
 
 ---
 
 ## Changelog
+
+### v1.12 — 2026-06-11
+- **Full code review pass (vs the VirtIO spec and across all transport paths).** Fixes, worst first:
+  - **>32 MiB single transfers were silently truncated.** The pipeline path cast the block count to the 16-bit READ(10)/WRITE(10) transfer-length field; a request above 65,535 blocks wrapped and short-transferred. Requests that exceed the 16-bit count now use READ(16)/WRITE(16) regardless of LBA (also fixed in the NSD fallback path).
+  - **Modern-mode endianness on device-written fields.** `virtio_scsi_resp_cmd.residual` is little-endian under VIRTIO_F_VERSION_1 but was read raw (benign while 0 — any real underrun would have produced a garbage `io_Actual`). New `virtio_scsi_resp_residual()` helper swaps when modern, and the result is clamped to the request length. The interrupt-coalescing `used_event` write in `VirtIOSCSI_Harvest` also missed its `vr16()` wrapper, byte-swapping the threshold on the modern path — the device could suppress interrupts it should have delivered.
+  - **Cross-task races on the inflight bookkeeping.** `complete_inflight_slot()` mutated `occupied_count` / `inflight_count` / `active_units_mask` and the per-unit free list without `io_lock`, but it can run in a *different* task from the owning unit (cross-unit inline harvest in DoIO). Lost decrements inflate `occupied_count`, which makes EVENT_IDX coalescing program a `used_event` for completions that never arrive. All free-list and counter updates now take `io_lock`; `VirtIOSCSI_Submit`'s slot pop/rollback uses the same lock.
+  - **Device-supplied descriptor index now bounds-checked** in `VirtQueue_GetBuf` before indexing `cookies[]` / `indirect_tables[]`.
+  - **Held TD_ADDCHANGEINT / TD_REMOVE with no unit** were neither held nor replied — the caller hung forever. They now fail with `IOERR_OPENFAIL`.
+  - **TD_GETNUMTRACKS returned 0.** Now queued to the unit task and answered with real cylinder counts (RDB-declared when present, linear fallback otherwise) — the existing handler was complete but never wired up.
+  - Unit-task startup failure path leaked the port mutex.
+- **Dead code removed:** `cmd_read.c`, `cmd_write.c`, `cmd_td_io64.c` (block I/O has gone through the inflight pipeline in `unit_task.c` since v1.3 — these synchronous handlers had no callers), the unused TD_CHANGESTATE/TD_PROTSTATUS/TD_GETDRIVETYPE stubs (answered inline in BeginIO), and write-only struct fields (`rdb_geometry_checked`, per-slot `scsi_status`/`residual`).
 
 ### v1.11 — 2026-05-15
 - **>2 TiB disks: partitions now mount.** `TD_GETGEOMETRY`'s `dg_TotalSectors` (uint32) is clamped to `0xFFFFFFFF` instead of letting the cast wrap to 0. `diskboot.kmod` (2014) treats `TotalSectors=0` as "size unknown" and skips the whole unit, which previously prevented any partition on a >2 TiB virtio-scsi disk from getting a DOSNode -- even partitions that lay entirely within 32-bit LBA range. Reported as `0xFFFFFFFF` the unit looks like a `>=` 2 TiB disk to legacy callers, and `NSCMD_TD_GETGEOMETRY64` still reports the real 64-bit count for callers that ask. Single partitions remain capped at 2 TiB by the RDB protocol's 32-bit cylinder fields (SDK limit, not a driver issue); use multiple partitions to span the full disk.

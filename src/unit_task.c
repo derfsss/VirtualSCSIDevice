@@ -349,6 +349,8 @@ static void UnitTask_Entry(struct UnitTaskStartMsg *startMsg)
     if (isr_bit < 0) {
         DPRINTF(IExec, "[virtioscsi:unit_task.c] UnitTask_Entry: AllocSignal for ISR failed\n");
         IExec->Signal(startMsg->parent_task, startMsg->ready_mask);
+        IExec->FreeSysObject(ASOT_MUTEX, unit->port_mutex);
+        unit->port_mutex = NULL;
         IExec->FreeSysObject(ASOT_PORT, unit->io_port);
         unit->io_port      = NULL;
         unit->io_port_mask = 0;
@@ -627,9 +629,13 @@ static BOOL submit_block_io(struct VirtIOSCSIBase *libBase,
     uint32 blocks = ioreq->io_Length / blksz;
     if (blocks == 0) blocks = 1;
 
+    /* READ(10)/WRITE(10) carries a 16-bit transfer length.  A single
+     * request larger than 65535 blocks (32 MiB at 512-byte blocks) must
+     * use the 16-byte CDB regardless of where the LBA lies -- the old
+     * (uint16) cast silently truncated the count and short-transferred. */
     uint8  cdb[16];
     uint32 cdb_len;
-    if (lba > 0xFFFFFFFFULL) {
+    if (lba > 0xFFFFFFFFULL || blocks > 0xFFFF) {
         if (is_write) make_write16_cdb(cdb, lba, blocks);
         else          make_read16_cdb(cdb,  lba, blocks);
         cdb_len = 16;
@@ -745,6 +751,10 @@ static BOOL UnitTask_Dispatch(struct VirtIOSCSIBase *libBase,
 
     case TD_GETGEOMETRY:
         Handle_TD_GetGeometry(libBase, ioreq);
+        break;
+
+    case TD_GETNUMTRACKS:
+        Handle_TD_GetNumTracks(libBase, ioreq);
         break;
 
     case HD_SCSICMD:

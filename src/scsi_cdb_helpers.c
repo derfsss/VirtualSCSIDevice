@@ -195,7 +195,6 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
      * on the disk.  Reset the per-unit RDB state up-front so a stale
      * earlier probe doesn't leak through if this read fails. */
     unit->rdb_geometry_valid    = FALSE;
-    unit->rdb_geometry_checked  = FALSE;
     unit->rdb_phys_cyls         = 0;
     unit->rdb_phys_sectors      = 0;
     unit->rdb_phys_heads        = 0;
@@ -217,7 +216,6 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
                                      SBV_AVT_HostDMA, 0, TAG_END);
     if (!buf) {
         DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: AllocVec failed\n");
-        unit->rdb_geometry_checked = TRUE;
         return 0; /* non-fatal */
     }
 
@@ -229,7 +227,6 @@ int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSI
     int32 rc = VirtIOSCSI_DoIO(base, unit, unit->target_id, unit->lun_id,
                                cdb, 10, buf, bs, FALSE,
                                &scsi_status, &residual);
-    unit->rdb_geometry_checked = TRUE;
 
     if (rc != 0 || scsi_status != 0) {
         DPRINTF(IExec, "[virtioscsi:scsi_cdb_helpers.c] RDB probe: block-0 read failed rc=%ld status=0x%02x\n",

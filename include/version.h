@@ -3,7 +3,7 @@
 
 /* Individual version components — displayed to the user and in $VER */
 #define DEVICE_VERSION 1
-#define DEVICE_REVISION 11
+#define DEVICE_REVISION 12
 #define DEVNAME "virtioscsi.device"
 
 /* Helper macros for stringification */

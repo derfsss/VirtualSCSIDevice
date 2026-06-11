@@ -6,8 +6,16 @@
 /*
  * VirtIO SCSI Command Structures (Spec 5.6.6.1)
  *
- * Legacy endianness: ALL fields are native guest endian (Big Endian on PPC).
- * No byte-swapping needed anywhere.
+ * Endianness:
+ *   Legacy mode: ALL fields are native guest endian (Big Endian on PPC) --
+ *   no byte-swapping anywhere.
+ *   Modern (VIRTIO_F_VERSION_1) mode: multi-byte fields are LITTLE-endian
+ *   ("this is unlike legacy interface, where fields were guest-endian").
+ *   Single-byte fields (status, response, task_attr, ...) and byte arrays
+ *   (lun, cdb, sense) need no conversion.  The uint64 `id` is a driver
+ *   cookie the device never interprets, so it round-trips unchanged.
+ *   Device-written multi-byte fields the driver actually reads (residual)
+ *   must go through virtio_scsi_resp_residual() below.
  */
 
 /* Default sizes from device config (spec 5.6.4.2) */
@@ -62,6 +70,26 @@ struct virtio_scsi_resp_cmd
     uint8 response; /* VirtIO response (VIRTIO_SCSI_S_OK = 0) */
     uint8 sense[VIRTIO_SCSI_SENSE_SIZE];
 } __attribute__((packed));
+
+/*
+ * Read the device-written residual count in native byte order.
+ *
+ * `residual` is a uint32 the device writes little-endian in modern mode
+ * and guest-endian (BE) in legacy mode.  Reading it raw on the modern
+ * path byte-swaps the value: a benign 0 stays 0 (why this went unnoticed
+ * -- full transfers have no residual), but any genuine underrun would
+ * produce a garbage io_Actual.
+ */
+static inline uint32 virtio_scsi_resp_residual(BOOL modern,
+                                               const struct virtio_scsi_resp_cmd *resp)
+{
+    uint32 v = resp->residual;
+    if (modern) {
+        v = ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
+            ((v & 0x00FF0000u) >> 8)  | ((v & 0xFF000000u) >> 24);
+    }
+    return v;
+}
 
 /*
  * Helper to fill the LUN field in SAM-2 format.

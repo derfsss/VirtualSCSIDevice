@@ -49,7 +49,7 @@ int32 ensure_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevU
 
 /* Read block 0 of the unit and, if it's a valid RDSK, populate
  * rdb_phys_cyls / rdb_phys_sectors / rdb_phys_heads and set
- * rdb_geometry_valid = TRUE.  Always sets rdb_geometry_checked so we
+ * rdb_geometry_valid = TRUE.  Always sets the probe state so we
  * don't keep re-probing a disk that has no RDB.  Returns 0 always
  * (a missing/invalid RDB is not an error — just "use the fallback"). */
 int32 ensure_rdb_geometry_cached(struct VirtIOSCSIBase *base, struct VirtIOUSCSIDevUnit *unit);

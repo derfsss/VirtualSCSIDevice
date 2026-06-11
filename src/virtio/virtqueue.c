@@ -377,6 +377,18 @@ void *VirtQueue_GetBuf(struct ExecIFace *IExec, struct virtqueue *vq, uint32 *le
     uint32 desc_id = vr32(vq->modern, vq->used->ring[used_slot].id);
     uint32 written = vr32(vq->modern, vq->used->ring[used_slot].len);
 
+    /* Defensive: the descriptor index comes from the DEVICE.  A buggy or
+     * malicious device could hand back an out-of-range id; indexing
+     * cookies[]/indirect_tables[] with it would corrupt driver memory.
+     * Consume the used-ring entry (so we don't spin on it forever) but
+     * return NULL as "nothing usable". */
+    if (desc_id >= vq->num) {
+        DPRINTF(IExec, "[virtioscsi:virtqueue.c] GetBuf: device returned bad desc id %lu (num=%lu) -- entry dropped\n",
+                desc_id, (uint32)vq->num);
+        vq->last_used_idx++;
+        return NULL;
+    }
+
     if (len_out)
         *len_out = written;
 
