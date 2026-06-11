@@ -737,6 +737,89 @@ static void test_large_transfer(struct MsgPort *port, struct IOStdReq *req)
 }
 
 /* -------------------------------------------------------------------------
+ * TEST 18: Transfer above the READ(10) 16-bit block-count limit
+ *
+ * Regression test for the v1.12 truncation fix: a single request larger
+ * than 65,535 blocks (32 MiB at 512-byte sectors) must select
+ * READ(16)/WRITE(16) -- the old code cast the count into READ(10)'s
+ * 16-bit transfer-length field and silently short-transferred.
+ *
+ * Reads 33 MiB (67,584 blocks: 2,048 past the field limit) and verifies
+ * io_Actual covers the FULL length.  Content correctness is checked by
+ * comparing the tail of the big read against a separate small read of
+ * the same disk region: with the truncation bug the tail would be the
+ * untouched 0xA5 fill pattern instead.
+ * ----------------------------------------------------------------------- */
+static void test_huge_transfer(struct MsgPort *port, struct IOStdReq *req)
+{
+    TPRINTF("--- TEST 18: >32 MiB TRANSFER (READ(16) block-count regression) ---\n");
+
+    const ULONG huge_size = 33UL * 1024 * 1024;   /* 67,584 x 512-byte blocks */
+    UBYTE *buf = alloc_buf(huge_size);
+    if (!buf) {
+        TPRINTF("[INFO] Could not allocate 33 MiB buffer -- skipping\n\n");
+        return;
+    }
+
+    /* Pre-fill the tail so a short transfer is detectable even if
+     * io_Actual were to lie. */
+    ULONG tail_off = huge_size - 512;
+    for (ULONG i = 0; i < 512; i++)
+        buf[tail_off + i] = 0xA5;
+
+    TPRINTF("18.1: 33 MiB single CMD_READ from sector 0...\n");
+    req->io_Command = CMD_READ;
+    req->io_Data    = buf;
+    req->io_Length  = huge_size;
+    req->io_Offset  = 0;
+    IExec->DoIO((struct IORequest *)req);
+
+    /* The driver may legitimately reject the request with HFERR_DMA when
+     * physical memory is fragmented beyond MAX_SG_ENTRIES (it does not
+     * split requests; filesystems bound theirs via MaxTransfer).  The
+     * regression under test is the SILENT SHORT TRANSFER: success
+     * reported with io_Actual below the requested length (the old code
+     * truncated the block count to READ(10)'s 16-bit field, returning
+     * exactly 2,048 of the 67,584 blocks). */
+    if (req->io_Error != 0) {
+        TPRINTF("[INFO] >32MiB read rejected cleanly (err %ld) -- "
+                "acceptable: no silent truncation possible\n",
+                (LONG)(int8)req->io_Error);
+        log_test(">32MiB request not silently truncated", TRUE);
+    } else {
+        log_test(">32MiB read io_Actual == full length",
+                 req->io_Actual == huge_size);
+    }
+
+    if (req->io_Error == 0) {
+        /* Cross-check the last block's content against a direct read */
+        UBYTE *ref = alloc_buf(512);
+        if (ref) {
+            for (ULONG i = 0; i < 512; i++) ref[i] = 0x5A;
+            req->io_Command = CMD_READ;
+            req->io_Data    = ref;
+            req->io_Length  = 512;
+            req->io_Offset  = tail_off;
+            IExec->DoIO((struct IORequest *)req);
+            if (req->io_Error == 0) {
+                BOOL match = TRUE;
+                for (ULONG i = 0; i < 512; i++) {
+                    if (buf[tail_off + i] != ref[i]) { match = FALSE; break; }
+                }
+                log_test(">32MiB read tail block matches direct read", match);
+            } else {
+                TPRINTF("[INFO] reference tail read failed (err %ld) -- "
+                        "tail comparison skipped\n", (LONG)(int8)req->io_Error);
+            }
+            IExec->FreeVec(ref);
+        }
+    }
+
+    IExec->FreeVec(buf);
+    TPRINTF("\n");
+}
+
+/* -------------------------------------------------------------------------
  * TEST 4: Concurrency stress (unit 0 only — original test)
  * ----------------------------------------------------------------------- */
 static void background_task_unit0(void)
@@ -1278,6 +1361,9 @@ int main(void)
 
     /* --- TEST 17: HD_SCSICMD unsupported opcode --- */
     test_unsupported_cdb(port, req);
+
+    /* --- TEST 18: >32 MiB transfer (READ(16) block-count regression) --- */
+    test_huge_transfer(port, req);
 
     if (IDOS)    IExec->DropInterface((struct Interface *)IDOS);
     if (DOSBase) IExec->CloseLibrary(DOSBase);
