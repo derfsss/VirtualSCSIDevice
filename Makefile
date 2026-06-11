@@ -79,24 +79,31 @@ $(DEBUG_OBJ_DIR)/%.o: src/%.c | $(BUILD_DIR)
 
 -include $(DEP)
 
-# Create distribution directory with all files needed to run on AmigaOS 4.
-# Autoinstall + Autoinstall.info make the installer double-clickable from
-# Workbench (the icon's default tool is C:IconX).
+# Create distribution directory with all files needed on AmigaOS 4.
+#
+# The installer is the OS Installation Utility wizard: installer/
+# carries the committed install.py (+ locale module), pre-generated
+# from installer/virtioscsi_installer_fixture.py.  install.py.info's
+# default tool is the Installation Utility, so the wizard launches
+# from a Workbench double-click with the drawer as current directory.
+# drawer.info becomes the archive-root drawer icon.
 dist: all
 	@echo "=== Creating distribution ==="
 	rm -rf $(DIST_DIR)/$(DIST_NAME)
-	mkdir -p $(DIST_DIR)/$(DIST_NAME)
-	@# Device driver (stripped release + unstripped debug variant)
-	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/
+	mkdir -p $(DIST_DIR)/$(DIST_NAME)/content
+	@# Device driver (release inside content/ for the installer; debug at root)
+	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/content/
 	-cp $(BUILD_DIR)/virtioscsi.device.debug $(DIST_DIR)/$(DIST_NAME)/ 2>/dev/null || true
-	@# Install script + Workbench icon
-	cp Autoinstall                    $(DIST_DIR)/$(DIST_NAME)/
-	cp Autoinstall.info               $(DIST_DIR)/$(DIST_NAME)/
+	@# Installation Utility wizard + Workbench icons
+	cp installer/install.py                  $(DIST_DIR)/$(DIST_NAME)/
+	cp installer/install.py.info             $(DIST_DIR)/$(DIST_NAME)/
+	cp installer/VirtioSCSIInstallerLocale.py $(DIST_DIR)/$(DIST_NAME)/
+	cp installer/drawer.info                 $(DIST_DIR)/$(DIST_NAME).info
 	@# Documentation
 	cp README_os4depot.txt            $(DIST_DIR)/$(DIST_NAME)/
 	@echo "Distribution created in $(DIST_DIR)/$(DIST_NAME)/"
 	@echo "Contents:"
-	@find $(DIST_DIR)/$(DIST_NAME) -type f | sort
+	@find $(DIST_DIR)/$(DIST_NAME) $(DIST_DIR)/$(DIST_NAME).info -type f | sort
 
 # Create LHA archive from distribution.  Uses host lha when available,
 # otherwise runs lha inside the toolchain Docker image.
@@ -104,10 +111,10 @@ dist-lha: dist
 	@echo "=== Creating LHA archive ==="
 	rm -f $(DIST_DIR)/$(DIST_NAME).lha
 	@if command -v lha >/dev/null 2>&1; then \
-	    (cd $(DIST_DIR) && lha ao5q $(DIST_NAME).lha $(DIST_NAME)); \
+	    (cd $(DIST_DIR) && lha ao5q $(DIST_NAME).lha $(DIST_NAME) $(DIST_NAME).info); \
 	else \
 	    echo "lha not on PATH — packing inside Docker"; \
-	    $(DOCKER_RUN) sh -c 'cd $(DIST_DIR) && lha ao5q /work/$(DIST_DIR)/$(DIST_NAME).lha $(DIST_NAME)'; \
+	    $(DOCKER_RUN) sh -c 'cd $(DIST_DIR) && lha ao5q /work/$(DIST_DIR)/$(DIST_NAME).lha $(DIST_NAME) $(DIST_NAME).info'; \
 	fi
 	@ls -la $(DIST_DIR)/$(DIST_NAME).lha
 	@echo "Archive created: $(DIST_DIR)/$(DIST_NAME).lha"

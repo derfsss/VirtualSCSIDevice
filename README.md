@@ -169,10 +169,14 @@ docker run --rm -v $(pwd):/src -w /src walkero/amigagccondocker:os4-gcc11 make d
 ```
 
 The distribution contains:
-- `virtioscsi.device` — the compiled driver
+- `install.py` + icon — AmigaOS **Installation Utility** wizard;
+  double-click it in Workbench (or run
+  `"SYS:Utilities/Installation Utility" PACKAGE=install.py` from a
+  shell with the drawer as current directory).  It copies the driver
+  to `SYS:Kickstart/`, inserts the `MODULE` line into Kicklayout
+  (backing up `Kicklayout.bak`), and offers a reboot.
+- `content/virtioscsi.device` — the compiled driver (copied by the installer)
 - `virtioscsi.device.debug` — debug build (verbose serial trace, drop-in swap)
-- `Autoinstall` + icon — install script; double-click it in Workbench, or
-  `Execute Autoinstall` from a shell (copies the driver to `SYS:Kickstart/`)
 - `README_os4depot.txt` — documentation
 
 ### Clean

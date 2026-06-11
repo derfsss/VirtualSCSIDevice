@@ -31,3 +31,4 @@ GEMINI.md
 .windsurfrules
 .aider*
 .github/copilot-instructions.md
+__pycache__/
