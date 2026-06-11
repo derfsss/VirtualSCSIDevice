@@ -161,7 +161,7 @@ With `DEBUG` defined, the driver emits detailed serial/debug output via `IExec->
 ### Distribution
 
 ```bash
-# Create dist/VirtualSCSIDevice/ directory with driver, installer, docs, and tests:
+# Create dist/VirtualSCSIDevice/ directory with driver, installer, and docs:
 docker run --rm -v $(pwd):/src -w /src walkero/amigagccondocker:os4-gcc11 make dist
 
 # Create LHA archive for distribution (dist/VirtualSCSIDevice.lha):
@@ -170,9 +170,10 @@ docker run --rm -v $(pwd):/src -w /src walkero/amigagccondocker:os4-gcc11 make d
 
 The distribution contains:
 - `virtioscsi.device` — the compiled driver
-- `Autoinstall` — AmigaDOS install script (copies driver to `SYS:Kickstart/`)
+- `virtioscsi.device.debug` — debug build (verbose serial trace, drop-in swap)
+- `Autoinstall` + icon — install script; double-click it in Workbench, or
+  `Execute Autoinstall` from a shell (copies the driver to `SYS:Kickstart/`)
 - `README_os4depot.txt` — documentation
-- `Tests/` — test programs (`test_virtioscsi`, `test_modern`, `test_inquiry`)
 
 ### Clean
 

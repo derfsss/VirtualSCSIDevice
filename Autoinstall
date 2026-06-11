@@ -1,7 +1,8 @@
 ; virtioscsi.device Autoinstall
 ; Installs VirtIO SCSI device driver for AmigaOS 4.1 Final Edition
 ;
-; Run from the VirtualSCSIDevice distribution directory:
+; Double-click the Autoinstall icon in Workbench, or run from a shell
+; in the VirtualSCSIDevice distribution directory:
 ;   Execute Autoinstall
 ;
 ; Files installed automatically:
@@ -66,3 +67,7 @@ echo "  Then add drives:"
 echo "  -drive file=disk.img,if=none,id=vd0,format=raw"
 echo "  -device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,scsi-id=0,lun=0"
 echo ""
+
+; Keep the output window readable when launched from the Workbench icon
+; (IconX closes its console as soon as the script ends).
+ask "Press RETURN to close this window."

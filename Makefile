@@ -79,7 +79,9 @@ $(DEBUG_OBJ_DIR)/%.o: src/%.c | $(BUILD_DIR)
 
 -include $(DEP)
 
-# Create distribution directory with all files needed to run on AmigaOS 4
+# Create distribution directory with all files needed to run on AmigaOS 4.
+# Autoinstall + Autoinstall.info make the installer double-clickable from
+# Workbench (the icon's default tool is C:IconX).
 dist: all
 	@echo "=== Creating distribution ==="
 	rm -rf $(DIST_DIR)/$(DIST_NAME)
@@ -87,18 +89,26 @@ dist: all
 	@# Device driver (stripped release + unstripped debug variant)
 	cp $(BUILD_DIR)/virtioscsi.device $(DIST_DIR)/$(DIST_NAME)/
 	-cp $(BUILD_DIR)/virtioscsi.device.debug $(DIST_DIR)/$(DIST_NAME)/ 2>/dev/null || true
-	@# Install script
+	@# Install script + Workbench icon
 	cp Autoinstall                    $(DIST_DIR)/$(DIST_NAME)/
+	cp Autoinstall.info               $(DIST_DIR)/$(DIST_NAME)/
 	@# Documentation
 	cp README_os4depot.txt            $(DIST_DIR)/$(DIST_NAME)/
 	@echo "Distribution created in $(DIST_DIR)/$(DIST_NAME)/"
 	@echo "Contents:"
 	@find $(DIST_DIR)/$(DIST_NAME) -type f | sort
 
-# Create LHA archive from distribution
+# Create LHA archive from distribution.  Uses host lha when available,
+# otherwise runs lha inside the toolchain Docker image.
 dist-lha: dist
 	@echo "=== Creating LHA archive ==="
-	$(DOCKER_RUN) sh -c 'cd $(DIST_DIR) && lha ao5q /work/$(DIST_DIR)/$(DIST_NAME).lha $(DIST_NAME)'
+	rm -f $(DIST_DIR)/$(DIST_NAME).lha
+	@if command -v lha >/dev/null 2>&1; then \
+	    (cd $(DIST_DIR) && lha ao5q $(DIST_NAME).lha $(DIST_NAME)); \
+	else \
+	    echo "lha not on PATH — packing inside Docker"; \
+	    $(DOCKER_RUN) sh -c 'cd $(DIST_DIR) && lha ao5q /work/$(DIST_DIR)/$(DIST_NAME).lha $(DIST_NAME)'; \
+	fi
 	@ls -la $(DIST_DIR)/$(DIST_NAME).lha
 	@echo "Archive created: $(DIST_DIR)/$(DIST_NAME).lha"
 
