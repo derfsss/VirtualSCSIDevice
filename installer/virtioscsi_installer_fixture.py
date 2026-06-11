@@ -36,7 +36,8 @@ users to add the module line to the zip instead.
 
 from installergen import (
     Project, Page, PageKind, Package, PackageKind, PostInstallAction,
-    LocaleString, LocaleRef,
+    LocaleString, LocaleRef, GuiBlock, GuiWidget, WidgetKind,
+    GroupOrientation, Frame,
 )
 from installergen.model import Handler
 
@@ -60,8 +61,13 @@ locale = [
         "    2.  \"SYS:Kickstart/Kicklayout\" will be updated to load "
         "the driver during startup; the previous configuration will be "
         "preserved as \"Kicklayout.bak\"\n\n"
-        "A system restart is required to complete the installation.\n\n\n"
+        "A system restart is required to complete the installation.\n\n"
+        "Click \"View Readme\" below for manual installation details, "
+        "the QEMU device setup, and general instructions on use.\n\n\n"
         "Press \"Next\" to continue."),
+    LocaleString(
+        "MSG_README_BUTTON",
+        "View Readme..."),
     LocaleString(
         "MSG_FINISH",
         "\nThe installation has finished.\n\n"
@@ -130,10 +136,45 @@ update_kicklayout = Handler(
 )
 
 
+# Welcome page is a GUI page (same rendered look as WELCOME) so it can
+# carry a "View Readme" button -- U2's kicklayout-page button idiom:
+# AddButton onclick handler launching NotePad on the bundled readme.
 welcome_page = Page(
     var_name="welcomePage",
-    kind=PageKind.WELCOME,
-    strings={"message": LocaleRef("MSG_WELCOME")},
+    kind=PageKind.GUI,
+    on_click_handlers=[
+        Handler(
+            name="readmeLaunch",
+            params=["page", "id"],
+            body=(
+                "amiga.system('notepad *>NIL: \"README_os4depot.txt\"')\n"
+                "return True\n"
+            ),
+        ),
+    ],
+    gui=GuiBlock(
+        orientation=GroupOrientation.VERTICAL,
+        children=[
+            GuiWidget(kind=WidgetKind.LABEL,
+                      label=LocaleRef("MSG_WELCOME")),
+            GuiBlock(
+                orientation=GroupOrientation.HORIZONTAL,
+                weight=0,
+                children=[
+                    GuiWidget(kind=WidgetKind.SPACE, weight=1),
+                    GuiWidget(
+                        kind=WidgetKind.BUTTON,
+                        frame=Frame.BUTTON,
+                        label=LocaleRef("MSG_README_BUTTON"),
+                        onclick="readmeLaunch",
+                        weight=10,
+                    ),
+                    GuiWidget(kind=WidgetKind.SPACE, weight=1),
+                ],
+            ),
+            GuiWidget(kind=WidgetKind.SPACE),
+        ],
+    ),
 )
 
 # The Kicklayout edit runs when the INSTALL page is left in the forward
