@@ -64,26 +64,13 @@ locale = [
         "Press \"Next\" to continue."),
     LocaleString(
         "MSG_FINISH",
-        "\nThe installation completed successfully.\n\n"
+        "\nThe installation has finished.\n\n"
         "virtioscsi.device has been copied to \"SYS:Kickstart\" and "
-        "\"SYS:Kickstart/Kicklayout\" has been updated.  The previous "
-        "configuration was preserved as \"Kicklayout.bak\".  The driver "
-        "will be activated by the next system restart.\n\n"
-        "Please ensure QEMU provides a VirtIO SCSI controller.  The "
-        "same device works on all supported machines (AmigaOne, "
-        "Pegasos2, and SAM460ex) -- the driver auto-detects the best "
-        "transport at boot:\n\n"
-        "    -device virtio-scsi-pci,id=scsi0\n\n"
-        "and attach drives to it:\n\n"
-        "    -drive file=disk.img,if=none,id=vd0,format=raw\n"
-        "    -device scsi-hd,drive=vd0,bus=scsi0.0,channel=0,"
-        "scsi-id=0,lun=0\n\n"
-        "If your system boots via BBoot with a kickstart.zip, add the "
-        "line \"MODULE Kickstart/virtioscsi.device\" to the Kicklayout "
-        "inside that zip instead.\n\n"
-        "Please note: when restarting from within QEMU, the virtual "
-        "machine may power off instead of restarting.  Should this "
-        "occur, simply start QEMU again.\n\n\n"
+        "\"SYS:Kickstart/Kicklayout\" has been updated (backup: "
+        "\"Kicklayout.bak\").  The driver activates on the next "
+        "system restart.\n\n"
+        "The QEMU device setup and BBoot/kickstart.zip notes are in "
+        "the README_os4depot.txt file in this drawer.\n\n\n"
         "Press \"Finish\" to exit the installation."),
     LocaleString(
         "MSG_REBOOT",
