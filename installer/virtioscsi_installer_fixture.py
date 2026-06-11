@@ -15,7 +15,9 @@ install.py + VirtioSCSIInstallerLocale.py are emitted from this
 fixture by an in-house installer-script generator and committed, so
 building the distribution archive needs no extra tooling.  This
 fixture is the authoritative description of the installer's pages,
-messages, and behaviour.
+messages, and behaviour.  The page idioms and the Kicklayout edit are
+expanded from `installergen.presets` -- the field-tested templates
+shared by all of this author's driver installers.
 
 Archive layout consumed by the script (see `make dist`):
 
@@ -30,22 +32,25 @@ a shell, CD into the drawer first) -- the package uses drawer-relative
 content/ paths, exactly like the OS's own update installers.
 
 NOTE for BBoot / kickstart.zip setups: those load Kickstart from the
-zip, not from SYS:Kickstart/Kicklayout.  The finish page tells such
-users to add the module line to the zip instead.
+zip, not from SYS:Kickstart/Kicklayout.  The readme tells such users
+to add the module line to the zip instead.
 """
 
 from installergen import (
     Project, Page, PageKind, Package, PackageKind, PostInstallAction,
-    LocaleString, LocaleRef, GuiBlock, GuiWidget, WidgetKind,
-    GroupOrientation, Frame, LabelAlign,
+    LocaleString, LocaleRef, Handler,
 )
-from installergen.model import Handler
+from installergen.presets import (
+    README_BUTTON_LOCALE, InsertAfterLast, welcome_with_readme,
+    finish_page, system_edit_helper, system_edit_exit_handler,
+)
 
 
-# NOTE: the Installation Utility's page text is PLAIN TEXT only --
-# formatting follows the conventions of Hyperion's own Update
-# installers: leading blank line, paragraph spacing, indented numbered
-# steps, quoted file and button names, and an explicit navigation cue.
+# NOTE: the Installation Utility's page text is PLAIN TEXT only and the
+# label does NOT scroll -- keep pages inside the ~20-rendered-line lint
+# budget and defer detail to the bundled readme.  Formatting follows
+# Hyperion's own Update installers: leading blank line, paragraph
+# spacing, quoted file and button names, explicit navigation cue.
 locale = [
     LocaleString(
         "MSG_WELCOME",
@@ -53,21 +58,16 @@ locale = [
         "driver.\n\n"
         "virtioscsi.device exposes QEMU VirtIO SCSI virtual disks to "
         "AmigaOS 4.1 Final Edition as standard block devices, on the "
-        "AmigaOne, Pegasos2, and SAM460ex QEMU machines.  It is "
-        "intended for AmigaOS systems running inside QEMU and serves "
-        "no purpose on real hardware.\n\n"
+        "AmigaOne, Pegasos2, and SAM460ex QEMU machines.\n\n"
         "The following changes will be made to your system:\n\n"
         "    1.  virtioscsi.device will be copied to \"SYS:Kickstart\"\n\n"
         "    2.  \"SYS:Kickstart/Kicklayout\" will be updated to load "
-        "the driver during startup; the previous configuration will be "
-        "preserved as \"Kicklayout.bak\"\n\n"
-        "A system restart is required to complete the installation.\n\n"
-        "Click \"View Readme\" below for manual installation details, "
-        "the QEMU device setup, and general instructions on use.\n\n\n"
+        "the driver during startup (backup: \"Kicklayout.bak\")\n\n"
+        "A system restart completes the installation.  Click "
+        "\"View Readme\" below for manual installation details, the "
+        "QEMU device setup, and general instructions on use.\n\n\n"
         "Press \"Next\" to continue."),
-    LocaleString(
-        "MSG_README_BUTTON",
-        "View Readme..."),
+    README_BUTTON_LOCALE,
     LocaleString(
         "MSG_FINISH",
         "\nThe installation has finished.\n\n"
@@ -84,135 +84,33 @@ locale = [
 ]
 
 
-# Appends the MODULE line to Kicklayout, directly after the last
-# existing device-driver MODULE entry so the new driver loads alongside
-# the other disk drivers.  Pure Python 2.5; binary file modes keep the
-# LF-only line endings Kickstart loaders require.  Returns an error
-# string, or None on success (including the already-installed case).
-update_kicklayout = Handler(
-    name="updateKicklayout",
-    params=[],
-    body=(
-        "kl = \"SYS:Kickstart/Kicklayout\"\n"
-        "module_line = \"MODULE Kickstart/virtioscsi.device\"\n"
-        "try:\n"
-        "    f = open(kl, \"rb\")\n"
-        "    data = f.read()\n"
-        "    f.close()\n"
-        "except IOError:\n"
-        "    return \"could not read \" + kl\n"
-        "lines = data.split(\"\\n\")\n"
-        "for ln in lines:\n"
-        "    if ln.strip() == module_line:\n"
-        "        return None        # already installed\n"
-        "last_dev = -1\n"
-        "last_mod = -1\n"
-        "for i in range(len(lines)):\n"
-        "    stripped = lines[i].strip()\n"
-        "    if stripped.startswith(\"MODULE\"):\n"
-        "        last_mod = i\n"
-        "        if stripped.find(\".device\") != -1:\n"
-        "            last_dev = i\n"
-        "insert_at = last_dev\n"
-        "if insert_at == -1:\n"
-        "    insert_at = last_mod\n"
-        "if insert_at == -1:\n"
-        "    return \"no MODULE lines found in \" + kl\n"
-        "out = lines[:insert_at + 1] + [module_line] + lines[insert_at + 1:]\n"
-        "try:\n"
-        "    b = open(kl + \".bak\", \"wb\")\n"
-        "    b.write(data)\n"
-        "    b.close()\n"
-        "except IOError:\n"
-        "    pass                   # backup is best-effort\n"
-        "try:\n"
-        "    f = open(kl, \"wb\")\n"
-        "    f.write(\"\\n\".join(out))\n"
-        "    f.close()\n"
-        "except IOError:\n"
-        "    return \"could not write \" + kl\n"
-        "return None\n"
-    ),
+# Welcome page with the View Readme button (proven preset).
+welcome_page = welcome_with_readme(
+    LocaleRef("MSG_WELCOME"), "README_os4depot.txt")
+
+# Kicklayout edit: append the MODULE line directly after the last
+# existing device-driver entry so the new driver loads alongside the
+# other disk drivers (proven preset: idempotent, .bak backup, LF-only).
+update_kicklayout = system_edit_helper(
+    "SYS:Kickstart/Kicklayout",
+    "MODULE Kickstart/virtioscsi.device",
+    InsertAfterLast(contains=".device"),
 )
 
-
-# Welcome page is a GUI page (same rendered look as WELCOME) so it can
-# carry a "View Readme" button -- U2's kicklayout-page button idiom:
-# AddButton onclick handler launching NotePad on the bundled readme.
-welcome_page = Page(
-    var_name="welcomePage",
-    kind=PageKind.GUI,
-    on_click_handlers=[
-        Handler(
-            name="readmeLaunch",
-            params=["page", "id"],
-            body=(
-                "amiga.system('notepad *>NIL: \"README_os4depot.txt\"')\n"
-                "return True\n"
-            ),
-        ),
-    ],
-    gui=GuiBlock(
-        orientation=GroupOrientation.VERTICAL,
-        children=[
-            GuiWidget(kind=WidgetKind.LABEL,
-                      label=LocaleRef("MSG_WELCOME"),
-                      weight=6, align=LabelAlign.LEFT),
-            GuiBlock(
-                orientation=GroupOrientation.HORIZONTAL,
-                weight=0,
-                children=[
-                    GuiWidget(kind=WidgetKind.SPACE, weight=1),
-                    GuiWidget(
-                        kind=WidgetKind.BUTTON,
-                        frame=Frame.BUTTON,
-                        label=LocaleRef("MSG_README_BUTTON"),
-                        onclick="readmeLaunch",
-                        weight=10,
-                    ),
-                    GuiWidget(kind=WidgetKind.SPACE, weight=1),
-                ],
-            ),
-            GuiWidget(kind=WidgetKind.SPACE, weight=1),
-        ],
-    ),
-)
-
-# The Kicklayout edit runs when the INSTALL page is left in the forward
-# direction -- i.e. after the file copy has completed.  Errors are
-# reported via asl.MessageBox with manual-fix instructions; the wizard
-# still completes so the copied driver isn't left half-installed silently.
+# The edit runs when the INSTALL page is left in the forward direction
+# -- i.e. after the file copy has completed.
 install_page = Page(
     var_name="installPage",
     kind=PageKind.INSTALL,
-    exit_handler=Handler(
-        name="installExitHandler",
-        params=["page_nr", "direction"],
-        body=(
-            "if direction != 1:\n"
-            "    return True\n"
-            "err = updateKicklayout()\n"
-            "if err:\n"
-            "    try:\n"
-            "        import asl\n"
-            "        asl.MessageBox(\"virtioscsi.device installer\",\n"
-            "            \"Kicklayout update failed: \" + err + \"\\n\\n\"\n"
-            "            \"Please add this line to SYS:Kickstart/Kicklayout\\n\"\n"
-            "            \"manually, after the existing device driver lines:\\n\\n\"\n"
-            "            \"MODULE Kickstart/virtioscsi.device\",\n"
-            "            \"OK\")\n"
-            "    except StandardError:\n"
-            "        pass\n"
-            "return True\n"
-        ),
+    exit_handler=system_edit_exit_handler(
+        "SYS:Kickstart/Kicklayout",
+        "MODULE Kickstart/virtioscsi.device",
+        "virtioscsi.device installer",
+        "manually, after the existing device driver lines:",
     ),
 )
 
-finish_page = Page(
-    var_name="finishPage",
-    kind=PageKind.FINISH,
-    strings={"message": LocaleRef("MSG_FINISH")},
-)
+finish = finish_page(LocaleRef("MSG_FINISH"))
 
 
 driver_package = Package(
@@ -247,7 +145,7 @@ project = Project(
     date="11.06.2026",
     locale_strings=locale,
     helpers=[update_kicklayout],
-    pages=[welcome_page, install_page, finish_page],
+    pages=[welcome_page, install_page, finish],
     packages=[driver_package],
     post_install_actions=[reboot_action],
 )
