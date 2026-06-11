@@ -20,3 +20,14 @@ tmp/
 docs/phase*_*.md
 docs/v*_implementation_plan.md
 docs/performance_plan*.md
+
+# AI agent instruction / context files -- local only, not published
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.cursor/
+.windsurfrules
+.aider*
+.github/copilot-instructions.md
