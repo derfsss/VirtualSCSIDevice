@@ -779,7 +779,7 @@ Plus the associated unused fields in `VirtIOSCSIBase`
 - `README.md`, `HISTORY.md`, `README_os4depot.txt` -- changelog +
   feature-list updates for >2 TiB support.
 
-## v1.10 SFS 1.290 Compatibility, SandboxVM, Wider AmigaOS Compatibility (May 2026)
+## v1.10 SFS 1.290 Compatibility, Hosted-Sandbox Support, Wider AmigaOS Compatibility (May 2026)
 
 ### SFS 1.290 mount fix
 
@@ -821,16 +821,16 @@ on-disk partition layout rather than the raw `READ CAPACITY` block
 count. Required because some filesystems (and `MediaToolbox`) reject
 geometry that disagrees with the RDB they're about to read.
 
-### SandboxVM compatibility
+### Hosted-sandbox compatibility
 
-When the driver runs as a resident under SandboxVM on AmigaOne X5000
+When the driver runs as a resident under the hosted-sandbox environment on AmigaOne X5000
 (`sandboxvm -r virtioscsi.device`), the host's private IExec sees
 guest allocations as vmem (extmem ≥ 2 GB) by default. The kernel's
 `StartDMA`/`GetDMAList` refuse to map those, so the driver's
 resident-init was failing on the very first vring `StartDMA` call
 and `CLT_InitFunc` returned NULL.
 
-SandboxVM ships a private `AllocVecTags` tag,
+the hosted-sandbox environment ships a private `AllocVecTags` tag,
 `SBV_AVT_HostDMA = 0x80535601`, that routes the allocation through
 the host's real allocator producing a buffer the kernel will
 DMA-map. The tag value is above `TAG_USER + small offsets` so on
@@ -845,8 +845,8 @@ The tag was added to every `AllocVecTags` whose buffer flows into
 - `src/virtio/virtio_events.c` — event pool
 
 Defined locally with `#ifndef` guard so this driver source has no
-build dependency on the SandboxVM tree. Value must stay in sync
-with `SandboxVM/VM-OS4/include/sbvm_tags.h`.
+build dependency on the the hosted-sandbox environment tree. Value must stay in sync
+with `the hosted-sandbox environment/VM-OS4/include/sbvm_tags.h`.
 
 Validated on X5000: with the old binary, `sandboxvm -r
 virtioscsi.device` failed at the first `StartDMA` with

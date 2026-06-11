@@ -31,7 +31,8 @@ REQUIREMENTS
   v53, so it loads on every FE release from the 53.54 install CD
   through Update 3.
 - QEMU with a supported machine type (amigaone, pegasos2, or sam460ex).
-- Also runs as a SandboxVM resident on AmigaOne X5000 (v1.10+).
+- Also validated as a resident driver inside a hosted AmigaOS
+  sandbox environment on AmigaOne X5000 hardware (v1.10+).
 
 
 QEMU SETUP
@@ -87,7 +88,7 @@ FEATURES
 - Interrupt coalescing via used_event batching
 - VIRTIO_F_INDIRECT_DESC for one-descriptor scatter-gather chains
 - SFS 1.290 / FFS2 / CDFileSystem all mount cleanly
-- SandboxVM (X5000 host) compatibility via SBV_AVT_HostDMA tagging
+- Hosted-sandbox (X5000 host) compatibility via SBV_AVT_HostDMA tagging
 - No deprecated AmigaOS APIs used (no Forbid/Permit, no CachePreDMA)
 
 
@@ -252,10 +253,10 @@ v1.10 (17.04.2026)
   - Stress suite updated: accepts --port, --monitor, --volume CLI args.
     Shell-run test checks serial log for diagnostic. 9P tier detects
     already-mounted SHARED:.
-  - SandboxVM compatibility (X5000 host): every AllocVecTags whose
+  - Hosted-sandbox compatibility (X5000 host): every AllocVecTags whose
     buffer flows into StartDMA is tagged with SBV_AVT_HostDMA. No-op
     on native AOS4 (the tag value is unknown so utility.library
-    ignores it); on SandboxVM it routes the allocation through the
+    ignores it); in the sandbox it routes the allocation through the
     host allocator so the buffer is DMA-mappable.
   - expansion.library minimum lowered to v53. v54 only ships in FE
     Update 3; with v53 the driver loads on every FE release from the
