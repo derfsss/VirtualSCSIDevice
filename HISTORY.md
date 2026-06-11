@@ -607,6 +607,70 @@ and was deleted along with it.
 - `Makefile` — debug-variant target, LHA layout
 - `tools/qemu-regression/` — new regression + stress harnesses
 
+## v1.12 Code Review: Transfer Truncation, Modern Endianness, Lock Races (June 2026)
+
+Systematic review of the whole driver against the VirtIO 1.0 spec and
+the dual transport paths, validated by the AmigaQemuTests harness on
+Pegasos2 (modern MMIO) and AmigaOne (legacy I/O) -- the full stress
+suite passes 50/50 project checks on both.
+
+**Correctness fixes:**
+
+- `submit_block_io` cast the block count to the 16-bit READ(10)/
+  WRITE(10) transfer-length field: any single request above 65,535
+  blocks (32 MiB at 512-byte sectors) silently wrapped and
+  short-transferred.  Requests above the 16-bit limit now select
+  READ(16)/WRITE(16) independently of the LBA.  The NSD fallback
+  handler had the same flaw.
+- Modern-mode endianness audit: `virtio_scsi_resp_cmd` fields written
+  by the device are little-endian under VIRTIO_F_VERSION_1.
+  `residual` was read raw everywhere (benign while 0 -- which is why
+  26 versions of testing never tripped it).  New
+  `virtio_scsi_resp_residual()` helper byte-swaps on the modern path;
+  values are clamped to the request length.  `VirtIOSCSI_Harvest`'s
+  interrupt-coalescing `used_event` store was the one vring access in
+  the codebase missing its `vr16()` wrapper -- a byte-swapped
+  threshold makes QEMU suppress interrupts the driver is waiting for.
+- `complete_inflight_slot` updated `occupied_count`,
+  `inflight_count`, `active_units_mask`, and the per-unit free list
+  with NO lock, but it can execute in a different task from the
+  owning unit (DoIO's cross-unit inline harvest).  Two concurrent
+  completions can lose a decrement, permanently inflating
+  `occupied_count` -- and the EVENT_IDX coalescing computes
+  `used_event = last_used_idx + occupied - 1` from it, programming an
+  interrupt threshold that is never reached.  All bookkeeping now
+  under `io_lock`, including `VirtIOSCSI_Submit`'s slot pop and the
+  rollback paths (`submit_release_slot` helper).
+- `VirtQueue_GetBuf` now bounds-checks the device-supplied used-ring
+  descriptor id before using it as an array index.
+- BeginIO held-command paths (TD_ADDCHANGEINT / TD_REMOVE) orphaned
+  the caller forever when `io_Unit` was NULL: neither held nor
+  replied.  Now fail with IOERR_OPENFAIL.
+- TD_GETNUMTRACKS: BeginIO answered inline with a hardcoded 0 while
+  `Handle_TD_GetNumTracks` (real cylinder counts from the RDB probe)
+  existed but was never wired into any dispatch path.  The command is
+  now queued to the unit task (the probe reads block 0, so it cannot
+  run in the caller's context) and the handler fixed a NULL-unit
+  dereference in its debug output.
+- `UnitTask_Entry` leaked `port_mutex` on the AllocSignal failure
+  path.
+
+**Dead code removal:** `cmd_read.c`, `cmd_write.c`, `cmd_td_io64.c`
+(synchronous block-I/O handlers; all block I/O has gone through the
+inflight pipeline since v1.3 -- the dispatcher never called them),
+the TD_CHANGESTATE / TD_PROTSTATUS / TD_GETDRIVETYPE stubs (answered
+inline in BeginIO since v1.10), the write-only `rdb_geometry_checked`
+unit field and per-slot `scsi_status`/`residual` fields, and the
+matching prototypes.  Makefile SRC list updated; binary is
+functionally identical for all reachable paths.
+
+**Harness note:** `config/projects/VirtualSCSIDevice.json` in
+AmigaQemuTests needed its test drive renamed `vd0` -> `scsitest0`
+(the pegasos2 base machine now uses `vd0` for its boot disk).  The
+standard-DOS "Rename (move) file" check currently fails on every
+machine including with `--standard-only` -- a harness-side
+regression, not a driver issue.
+
 ## v1.11 >2 TiB Partitions, sii3112-compatible Geometry (May 2026)
 
 The headline change: virtio-scsi disks larger than 2 TiB now have their
