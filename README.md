@@ -2,7 +2,11 @@
 
 A VirtIO SCSI block device driver for AmigaOS 4.1 Final Edition running in QEMU virtual machines.
 
-**Status:** Stable (v1.12) — boot-drive capable; validated on QEMU Pegasos2, AmigaOne, and SAM460ex.
+**Status:** Beta (v1.12) — boot-drive capable; validated on QEMU Pegasos2, AmigaOne, and SAM460ex.
+
+> ⚠️ **Beta — actively under development.** Expect bugs and rough
+> edges; do not rely on it for anything important. Use at your own
+> risk.
 
 ---
 
