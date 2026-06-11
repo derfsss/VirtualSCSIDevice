@@ -227,14 +227,13 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history and
 
 ## Development
 
-This driver was developed with [Claude](https://claude.ai) (Anthropic)
-acting as the primary engineer — writing the C code, designing the
-architecture, debugging hardware-level issues, and navigating the
-AmigaOS 4.1 SDK — with a human developer directing, reviewing, and
-testing the result.
+This project was created with help from [ClaudeAI](https://claude.ai)
+(Anthropic) — writing the C code, designing the architecture, and
+debugging hardware-level issues against the AmigaOS 4.1 SDK — with a
+human developer directing, reviewing, and testing the result.
 
-[Kyvos](https://ko-fi.com/s/6476fdadd2) was used to develop and test
-this driver.
+[Kyvos](https://ko-fi.com/s/6476fdadd2) was used to develop and
+test this driver.
 
 ## License
 
