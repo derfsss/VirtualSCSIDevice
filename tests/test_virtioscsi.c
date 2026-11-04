@@ -62,8 +62,22 @@ struct CrossUnitArg {
     ULONG parent_sigbit;  /* signal bit to use */
 };
 
-static void cross_unit_task(void)
+/* Child processes start with the dos.doc CreateNewProc NP_Start prototype
+ * and a start-up handshake: the first act is to wait for CTRL-F, which the
+ * parent sends only after CreateNewProcTags() has returned. Without it a
+ * child that runs and exits before dos.library has linked it into its
+ * process list crashes DOS (a DSI in Remove() at process exit); dos.doc
+ * says a child may exit before the call returns, and dos.library 54.136
+ * does not survive that (rust-amigaos4-crate virtio-scsi PROGRESS.md). */
+static void child_go(void)
 {
+    IExec->Wait(SIGBREAKF_CTRL_F);
+}
+
+static int32 cross_unit_task(STRPTR args, int32 arglen, struct ExecBase *sysbase)
+{
+    (void)args; (void)arglen; (void)sysbase;
+    child_go();
     struct Task *self = IExec->FindTask(NULL);
     struct CrossUnitArg *arg = (struct CrossUnitArg *)self->tc_UserData;
 
@@ -98,6 +112,7 @@ static void cross_unit_task(void)
     if (port) IExec->FreeSysObject(ASOT_PORT, port);
 
     IExec->Signal(arg->parent, 1UL << arg->parent_sigbit);
+    return RETURN_OK;
 }
 
 /* ---- existing tests from v1.2 (unchanged API) --------------------------- */
@@ -365,6 +380,8 @@ static void test_multi_unit_concurrent(struct DOSIFace *IDOS)
         NP_Child,    TRUE,
         TAG_DONE);
 
+    if (p0) IExec->Signal((struct Task *)p0, SIGBREAKF_CTRL_F); /* start-up handshake */
+
     struct Process *p1 = IDOS->CreateNewProcTags(
         NP_Entry,    (ULONG)cross_unit_task,
         NP_Name,     (ULONG)"VirtIO_CU1",
@@ -372,6 +389,8 @@ static void test_multi_unit_concurrent(struct DOSIFace *IDOS)
         NP_UserData, (ULONG)&arg1,
         NP_Child,    TRUE,
         TAG_DONE);
+
+    if (p1) IExec->Signal((struct Task *)p1, SIGBREAKF_CTRL_F); /* start-up handshake */
 
     if (!p0 || !p1) {
         TPRINTF("[INFO] Could not create tasks — skipping\n\n");
@@ -468,6 +487,8 @@ static void test_multi_unit_mixed_size(struct DOSIFace *IDOS)
         NP_Child,    TRUE,
         TAG_DONE);
 
+    if (p0) IExec->Signal((struct Task *)p0, SIGBREAKF_CTRL_F); /* start-up handshake */
+
     struct Process *p1 = IDOS->CreateNewProcTags(
         NP_Entry,    (ULONG)cross_unit_task,
         NP_Name,     (ULONG)"VirtIO_Mix1",
@@ -475,6 +496,8 @@ static void test_multi_unit_mixed_size(struct DOSIFace *IDOS)
         NP_UserData, (ULONG)&arg1,
         NP_Child,    TRUE,
         TAG_DONE);
+
+    if (p1) IExec->Signal((struct Task *)p1, SIGBREAKF_CTRL_F); /* start-up handshake */
 
     if (!p0 || !p1) {
         TPRINTF("[INFO] Could not create tasks — skipping\n\n");
@@ -658,6 +681,8 @@ static void test_doit_geometry_interleave(struct DOSIFace *IDOS)
         NP_Child,    TRUE,
         TAG_DONE);
 
+    if (p0) IExec->Signal((struct Task *)p0, SIGBREAKF_CTRL_F); /* start-up handshake */
+
     /* Foreground: 20 geometry queries on unit 1 via DoIO */
     ULONG geo_errors = 0;
     if (p0) {
@@ -822,8 +847,10 @@ static void test_huge_transfer(struct MsgPort *port, struct IOStdReq *req)
 /* -------------------------------------------------------------------------
  * TEST 4: Concurrency stress (unit 0 only — original test)
  * ----------------------------------------------------------------------- */
-static void background_task_unit0(void)
+static int32 background_task_unit0(STRPTR args, int32 arglen, struct ExecBase *sysbase)
 {
+    (void)args; (void)arglen; (void)sysbase;
+    child_go();
     struct MsgPort *port = IExec->AllocSysObjectTags(ASOT_PORT, TAG_DONE);
     struct IOStdReq *req = (struct IOStdReq *)IExec->AllocSysObjectTags(
         ASOT_IOREQUEST, ASOIOR_Size, sizeof(struct IOStdReq),
@@ -845,6 +872,7 @@ static void background_task_unit0(void)
     }
     if (req)  IExec->FreeSysObject(ASOT_IOREQUEST, req);
     if (port) IExec->FreeSysObject(ASOT_PORT, port);
+    return RETURN_OK;
 }
 
 /* -------------------------------------------------------------------------
@@ -1306,6 +1334,7 @@ int main(void)
             NP_Priority, 0,
             NP_Child,    TRUE,
             TAG_DONE);
+        if (bg_proc) IExec->Signal((struct Task *)bg_proc, SIGBREAKF_CTRL_F); /* start-up handshake */
         if (bg_proc) {
             UBYTE *buf = alloc_buf(512);
             if (buf) {
